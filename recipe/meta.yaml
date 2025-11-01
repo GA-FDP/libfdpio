@@ -1,0 +1,49 @@
+{% set name = "libfdpio" %}
+{% set version = "1.0.0" %}
+
+package:
+  name: {{ name|lower }}
+  version: {{ version }}
+
+source:
+  path: ..
+
+build:
+  number: 0
+  run_exports:
+    - {{ pin_subpackage(name, max_pin="x.x") }}
+
+requirements:
+  build:
+    - {{ compiler('cxx') }}
+    - {{ stdlib('c') }}
+    - cmake
+    - make
+    - pkg-config
+  host:
+    - xrootd
+  run:
+    - xrootd
+
+test:
+  commands:
+    - test -f $PREFIX/lib/libfdpio${SHLIB_EXT}  # [unix]
+    - test -f $PREFIX/include/fdpio.h  # [unix]
+    - if not exist %LIBRARY_BIN%\fdpio.dll exit 1  # [win]
+    - if not exist %LIBRARY_INC%\fdpio.h exit 1  # [win]
+
+about:
+  home: https://github.com/GA-FDP/libfdpio
+  license: Apache-2.0
+  license_family: Apache
+  license_file: LICENSE
+  summary: Fusion Data Platform I/O library for XRootD access
+  description: |
+    libfdpio provides a C/C++ interface for accessing files through XRootD
+    protocols, specifically designed for the Fusion Data Platform. It supports
+    various XRootD-compatible protocols including Pelican, HTTP, and HTTPS.
+  dev_url: https://github.com/GA-FDP/libfdpio
+
+extra:
+  recipe-maintainers:
+    - sammuli
