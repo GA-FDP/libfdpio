@@ -26,10 +26,11 @@ jobs:
           channels: conda-forge
 
       - name: Build Conda package
+        env:
+          BEARER_TOKEN: ${{ secrets.BEARER_TOKEN }}
         run: |
           mamba install --yes boa
           mkdir ${HOME}/outdir
-          export BEARER_TOKEN=${{ secrets.BEARER_TOKEN }}
           conda mambabuild --output-folder=${HOME}/outdir -c ga-fdp recipe 
 
       - name: Get Tags
