@@ -98,22 +98,42 @@ static int _fdpio_init() {
     }
     
     try {
-        // Try to load authentication token from ~/.fdp/token
-        const char* home = getenv("HOME");
-        if (home) {
-            std::string token_path = std::string(home) + "/.fdp/token";
-            FILE* token_file = fopen(token_path.c_str(), "r");
-            if (token_file) {
-                char token_buffer[4096];
-                if (fgets(token_buffer, sizeof(token_buffer), token_file)) {
-                    // Remove trailing newline
-                    size_t len = strlen(token_buffer);
-                    if (len > 0 && token_buffer[len-1] == '\n') {
-                        token_buffer[len-1] = '\0';
-                    }
-                    g_global_auth_token = token_buffer;
+        // Load authentication token: first try BEARER_TOKEN, then BEARER_TOKEN_FILE
+        const char* bearer_token = getenv("BEARER_TOKEN");
+        if (bearer_token && strlen(bearer_token) > 0) {
+            g_global_auth_token = bearer_token;
+        } else {
+            // Try BEARER_TOKEN_FILE, default to ~/.fdp/token if not set
+            const char* token_file_path = getenv("BEARER_TOKEN_FILE");
+            std::string token_path;
+            
+            if (token_file_path && strlen(token_file_path) > 0) {
+                token_path = token_file_path;
+            } else {
+                // Default to ~/.fdp/token
+                const char* home = getenv("HOME");
+                if (home) {
+                    token_path = std::string(home) + "/.fdp/token";
+                } else {
+                    // No HOME set, skip token loading
+                    token_path = "";
                 }
-                fclose(token_file);
+            }
+            
+            if (!token_path.empty()) {
+                FILE* token_file = fopen(token_path.c_str(), "r");
+                if (token_file) {
+                    char token_buffer[4096];
+                    if (fgets(token_buffer, sizeof(token_buffer), token_file)) {
+                        // Remove trailing newline
+                        size_t len = strlen(token_buffer);
+                        if (len > 0 && token_buffer[len-1] == '\n') {
+                            token_buffer[len-1] = '\0';
+                        }
+                        g_global_auth_token = token_buffer;
+                    }
+                    fclose(token_file);
+                }
             }
         }
         

@@ -116,4 +116,9 @@ if(BUILD_TESTS)
     set_tests_properties(fdpio_tests PROPERTIES
         ENVIRONMENT "XRDCP_ALLOW_HTTP=true;FDPIO_PROTOCOLS=pelican,http,https"
     )
+    
+    # Install test executable
+    install(TARGETS test_fdpio
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    )
 endif()

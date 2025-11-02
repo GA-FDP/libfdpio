@@ -1,0 +1,45 @@
+name: Conda Package CI/CD
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'release-*'
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build_and_test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash -el {0}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: conda-incubator/setup-miniconda@v3
+        with:
+          miniforge-version: latest
+          channels: conda-forge
+
+      - name: Build Conda package
+        run: |
+          mamba install --yes boa
+          mkdir ${HOME}/outdir
+          export BEARER_TOKEN=${{ secrets.BEARER_TOKEN }}
+          conda mambabuild --output-folder=${HOME}/outdir -c ga-fdp recipe 
+
+      - name: Get Tags
+        if: startsWith(github.ref, 'refs/tags/release-')
+        id: tag
+        uses: ildug/get-tag-action@v1
+
+      - name: Upload to Anaconda
+        if: startsWith(github.ref, 'refs/tags/release-')
+        run: |
+          mamba install -c conda-forge anaconda-client
+          
+          anaconda -t ${{ secrets.ANACONDA_API_TOKEN }} upload --force ${HOME}/outdir/linux-64/*.tar.bz2
