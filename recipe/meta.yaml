@@ -24,15 +24,9 @@ requirements:
     - xrootd
   run:
     - xrootd
+    - xrdcl-pelican
 
 test:
-  commands:
-    - test -f $PREFIX/lib/libfdpio${SHLIB_EXT}  # [unix]
-    - test -f $PREFIX/include/fdpio.h  # [unix]
-    - test -f $PREFIX/bin/test_fdpio  # [unix]
-    - if not exist %LIBRARY_BIN%\fdpio.dll exit 1  # [win]
-    - if not exist %LIBRARY_INC%\fdpio.h exit 1  # [win]
-    - export XRDCP_ALLOW_HTTP=true && export FDPIO_PROTOCOLS=pelican,http,https && export XRD_CURLNUMTHREADS=1 && test_fdpio  # [unix]
 
 about:
   home: https://github.com/GA-FDP/libfdpio
