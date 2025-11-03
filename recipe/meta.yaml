@@ -1,17 +1,13 @@
-{% set name = "libfdpio" %}
-{% set version = "1.0.0" %}
-
 package:
-  name: {{ name|lower }}
-  version: {{ version }}
+  name: libfdpio
+  version: {{ GIT_DESCRIBE_TAG }}
 
 source:
   path: ..
 
 build:
   number: 0
-  run_exports:
-    - {{ pin_subpackage(name, max_pin="x.x") }}
+  string: {{ GIT_DESCRIBE_NUMBER }}_{{ GIT_DESCRIBE_HASH }}
 
 requirements:
   build:
