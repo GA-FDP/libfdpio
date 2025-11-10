@@ -9,8 +9,8 @@ test -d $PREFIX/etc/xrootd/client.plugins.d
 
 export XRD_PLUGINCONFDIR=${PREFIX}/etc/xrootd/client.plugins.d 
 export XRDCP_ALLOW_HTTP=true 
-export FDPIO_PROTOCOLS=pelican,http,https 
 export XRD_CURLNUMTHREADS=1 
+export XRD_PELICANUSEAUTHHEADERS=true
 
 test_fdpio
 
