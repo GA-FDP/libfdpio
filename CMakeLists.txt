@@ -6,38 +6,32 @@ project(fdpio VERSION 1.0.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Find XRootD libraries manually (conda doesn't provide .pc files)
-find_library(XRDCL_LIBRARY 
-    NAMES XrdCl
-    HINTS ${CMAKE_PREFIX_PATH}/lib $ENV{PREFIX}/lib
-)
+add_compile_definitions(_LARGEFILE_SOURCE _LARGEFILE64_SOURCE _FILE_OFFSET_BITS=64)
 
-find_library(XRDUTILS_LIBRARY 
-    NAMES XrdUtils
-    HINTS ${CMAKE_PREFIX_PATH}/lib $ENV{PREFIX}/lib
+# Find XRootD libraries manually (conda doesn't provide .pc files)
+
+find_library(XRDPOSIXPRELOAD_LIBRARY 
+    NAMES XrdPosixPreload
+    HINTS ${CMAKE_PREFIX_PATH}/lib $ENV{PREFIX}/lib $ENV{CONDA_PREFIX}/lib
 )
 
 find_path(XROOTD_INCLUDE_DIR 
     NAMES XrdCl/XrdClFile.hh
-    HINTS ${CMAKE_PREFIX_PATH}/include/xrootd $ENV{PREFIX}/include/xrootd
+    HINTS ${CMAKE_PREFIX_PATH}/include/xrootd $ENV{PREFIX}/include/xrootd $ENV{CONDA_PREFIX}/include/xrootd
 )
 
 # Check if we found everything
-if(NOT XRDCL_LIBRARY)
-    message(FATAL_ERROR "XrdCl library not found. Make sure XRootD is installed.")
+if(NOT XRDPOSIXPRELOAD_LIBRARY)
+    message(FATAL_ERROR "XrdPosixPreload library not found. Make sure XRootD is installed.")
 endif()
 
-if(NOT XRDUTILS_LIBRARY)
-    message(FATAL_ERROR "XrdUtils library not found. Make sure XRootD is installed.")
-endif()
 
 if(NOT XROOTD_INCLUDE_DIR)
     message(FATAL_ERROR "XRootD headers not found. Make sure XRootD development files are installed.")
 endif()
 
 message(STATUS "Found XRootD:")
-message(STATUS "  XrdCl library: ${XRDCL_LIBRARY}")
-message(STATUS "  XrdUtils library: ${XRDUTILS_LIBRARY}")
+message(STATUS "  XrdPosixPreload library: ${XRDPOSIXPRELOAD_LIBRARY}")
 message(STATUS "  Include directory: ${XROOTD_INCLUDE_DIR}")
 
 # Include directories
@@ -53,7 +47,7 @@ set(FDPIO_SOURCES
 add_library(fdpio SHARED ${FDPIO_SOURCES})
 
 # Link libraries
-target_link_libraries(fdpio ${XRDCL_LIBRARY} ${XRDUTILS_LIBRARY})
+target_link_libraries(fdpio ${XRDPOSIXPRELOAD_LIBRARY})
 
 # Set library properties
 set_target_properties(fdpio PROPERTIES

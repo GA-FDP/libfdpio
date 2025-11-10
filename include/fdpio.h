@@ -17,59 +17,6 @@ limitations under the License.
 #ifndef FDPIO_H
 #define FDPIO_H
 
-#include <stddef.h>
-#include <sys/types.h>
-
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-// XRootD handle management constants
-#define FDPIO_FD_BASE 10000
-#define FDPIO_MAX_HANDLES 10000
-#define FDPIO_FD_MAX (FDPIO_FD_BASE + FDPIO_MAX_HANDLES)
-
-// Generic XRootD file handle for FDP I/O
-typedef struct fdpio_handle {
-    void* xrd_file;     // XrdCl::File pointer
-    int is_open;
-    char* url;
-    char* auth_token;
-    off_t current_pos;
-} fdpio_handle_t;
-
-// Initialize XRootD subsystem for FDP I/O
-int fdpio_init(void);
-
-// Open an XRootD URL for FDP I/O
-int fdpio_open(const char* url, int flags, fdpio_handle_t** handle);
-
-// Read from XRootD file
-ssize_t fdpio_read(fdpio_handle_t* handle, void* buffer, size_t size);
-
-// Seek in XRootD file
-off_t fdpio_lseek(fdpio_handle_t* handle, off_t offset, int whence);
-
-// Close XRootD file
-int fdpio_close(fdpio_handle_t* handle);
-
-// Cleanup XRootD resources
-void fdpio_cleanup(void);
-
-// Check if a URL is XRootD-compatible
-int fdpio_is_url(const char* url);
-
-// Set authentication token for XRootD requests
-void fdpio_set_token(const char* token);
-
-// Get error string for last XRootD operation
-const char* fdpio_error_string(void);
-
-// Check if an XRootD file exists
-int fdpio_stat(const char* url);
-
-#ifdef __cplusplus
-}
-#endif
+#include "XrdPosix/XrdPosix.hh"
 
 #endif // FDPIO_H
