@@ -19,6 +19,8 @@ limitations under the License.
 #include <XrdPosix/XrdPosixXrootdPath.hh>
 
 
+// Note - this doesn't work within a conda build environment. Just keeping it as a placeholder
+// if we do ever need more complicated initialization.
 __attribute__((constructor))
 static void on_load(void) {
     XrdPosixXrootPath::AddProto("pelican://");

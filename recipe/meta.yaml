@@ -24,8 +24,11 @@ requirements:
   run:
     - xrootd
     - xrdcl-pelican
+    - certifi
 
 test:
+  script_env:
+    - BEARER_TOKEN
 
 about:
   home: https://github.com/GA-FDP/libfdpio
