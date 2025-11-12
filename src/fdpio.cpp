@@ -16,13 +16,17 @@ limitations under the License.
 
 #include <fdpio.h>
 
-#include <XrdPosix/XrdPosixXrootdPath.hh>
+//#include <XrdPosix/XrdPosixXrootdPath.hh>
 
 
 // Note - this doesn't work within a conda build environment. Just keeping it as a placeholder
 // if we do ever need more complicated initialization.
+extern "C" {
+
 __attribute__((constructor))
 static void on_load(void) {
-    XrdPosixXrootPath::AddProto("pelican://");
+    //XrdPosixXrootPath::AddProto("pelican://");
+}
+
 }
 
