@@ -7,14 +7,10 @@ mkdir -p build
 cd build
 
 # Configure with CMake
-cmake \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_INSTALL_PREFIX=$PREFIX \
-    -DCMAKE_INSTALL_LIBDIR=lib \
-    ..
+cmake -DCMAKE_INSTALL_PREFIX=$PREFIX ..
 
 # Build
-make -j${CPU_COUNT}
+make
 
 # Install
 make install

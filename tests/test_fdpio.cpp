@@ -108,18 +108,13 @@ TEST_CASE("directory operations") {
     
     // Test directory URL - contains multiple files including helloFDP.txt
     const char* TEST_DIR_URL = "pelican://osg-htc.org:443/fdp-d3d";
+    DIR *d = opendir(TEST_DIR_URL);
     
-    SUBCASE("open directory") {
-        DIR *d = opendir(TEST_DIR_URL);
-        CHECK(d != nullptr);
-        
-        if (d) closedir(d);
-    }
     
     SUBCASE("read directory entries") {
 
         DIR *d = opendir(TEST_DIR_URL);
-        CHECK(d != nullptr);
+        REQUIRE(d != nullptr);
         
         // Should contain the helloFDP.txt file
         struct dirent *entry;
