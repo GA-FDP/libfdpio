@@ -8,9 +8,12 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 add_compile_definitions(_LARGEFILE_SOURCE _LARGEFILE64_SOURCE _FILE_OFFSET_BITS=64)
 
+# Prefer shared libraries over static
+set(CMAKE_FIND_LIBRARY_SUFFIXES .so .so.1 .so.0)
+
 # Find XRootD libraries manually (conda doesn't provide .pc files)
 
-find_library(XRDPOSIXPRELOAD_LIBRARY 
+find_library(XRDPOSIXPRELOAD_LIBRARY
     NAMES XrdPosixPreload
     HINTS ${CMAKE_PREFIX_PATH}/lib $ENV{PREFIX}/lib $ENV{CONDA_PREFIX}/lib
 )
