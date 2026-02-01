@@ -12,29 +12,28 @@ add_compile_definitions(_LARGEFILE_SOURCE _LARGEFILE64_SOURCE _FILE_OFFSET_BITS=
 set(CMAKE_FIND_LIBRARY_SUFFIXES .so .so.1 .so.0)
 
 # Find XRootD libraries manually (conda doesn't provide .pc files)
-
-find_library(XRDPOSIXPRELOAD_LIBRARY
-    NAMES XrdPosixPreload
+# Look for the library directory
+find_path(XROOTD_LIB_DIR
+    NAMES libXrdPosixPreload.so
     HINTS ${CMAKE_PREFIX_PATH}/lib $ENV{PREFIX}/lib $ENV{CONDA_PREFIX}/lib
 )
 
-find_path(XROOTD_INCLUDE_DIR 
+find_path(XROOTD_INCLUDE_DIR
     NAMES XrdCl/XrdClFile.hh
     HINTS ${CMAKE_PREFIX_PATH}/include/xrootd $ENV{PREFIX}/include/xrootd $ENV{CONDA_PREFIX}/include/xrootd
 )
 
 # Check if we found everything
-if(NOT XRDPOSIXPRELOAD_LIBRARY)
+if(NOT XROOTD_LIB_DIR)
     message(FATAL_ERROR "XrdPosixPreload library not found. Make sure XRootD is installed.")
 endif()
-
 
 if(NOT XROOTD_INCLUDE_DIR)
     message(FATAL_ERROR "XRootD headers not found. Make sure XRootD development files are installed.")
 endif()
 
 message(STATUS "Found XRootD:")
-message(STATUS "  XrdPosixPreload library: ${XRDPOSIXPRELOAD_LIBRARY}")
+message(STATUS "  Library directory: ${XROOTD_LIB_DIR}")
 message(STATUS "  Include directory: ${XROOTD_INCLUDE_DIR}")
 
 # Include directories
@@ -49,8 +48,12 @@ set(FDPIO_SOURCES
 # Create shared library
 add_library(fdpio SHARED ${FDPIO_SOURCES})
 
-# Link libraries
-target_link_libraries(fdpio ${XRDPOSIXPRELOAD_LIBRARY})
+# Force dynamic linking
+target_link_options(fdpio PRIVATE "LINKER:-Bdynamic")
+
+# Link against XRootD dynamically
+target_link_directories(fdpio PRIVATE ${XROOTD_LIB_DIR})
+target_link_libraries(fdpio XrdPosixPreload)
 
 # Set library properties
 set_target_properties(fdpio PROPERTIES
