@@ -9,7 +9,7 @@ source:
   path: ..
 
 build:
-  number: 0
+  number: 1
   string: {{ GIT_DESCRIBE_NUMBER }}_{{ GIT_DESCRIBE_HASH }}
 
 requirements:
@@ -23,7 +23,7 @@ requirements:
     - xrootd
   run:
     - xrootd
-    - xrdcl-pelican
+    - xrdcl-pelican-fdp
     - certifi
 
 test:
