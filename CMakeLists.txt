@@ -52,7 +52,7 @@ add_library(fdpio SHARED ${FDPIO_SOURCES})
 target_link_options(fdpio PRIVATE "LINKER:-Bdynamic")
 
 # Link against XRootD and dependencies dynamically
-target_link_directories(fdpio PRIVATE ${XROOTD_LIB_DIR})
+target_link_directories(fdpio PUBLIC ${XROOTD_LIB_DIR})
 target_link_libraries(fdpio XrdCl XrdPosixPreload XrdPosix curl ssl crypto)
 
 # Set library properties
