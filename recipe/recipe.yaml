@@ -1,0 +1,64 @@
+context:
+  version: ${{ env.get("GIT_DESCRIBE_TAG", default="0.0.0") | replace("release-", "") }}
+  build_number: ${{ env.get("GIT_DESCRIBE_NUMBER", default="0") }}
+  build_hash: ${{ env.get("GIT_DESCRIBE_HASH", default="unknown") }}
+
+package:
+  name: libfdpio
+  version: ${{ version }}
+
+source:
+  path: ..
+
+build:
+  number: 1
+  string: ${{ build_number }}_${{ build_hash }}
+  script:
+    - mkdir -p build
+    - cd build
+    - cmake -DCMAKE_INSTALL_PREFIX=$PREFIX ..
+    - make
+    - make install
+
+requirements:
+  build:
+    - ${{ compiler('cxx') }}
+    - ${{ stdlib('c') }}
+    - cmake
+    - make
+    - pkg-config
+  host:
+    - xrootd
+  run:
+    - xrootd
+    - xrdcl-pelican-fdp
+    - certifi
+
+tests:
+  - script:
+      env:
+        BEARER_TOKEN: ${{ env.get("BEARER_TOKEN", default="") }}
+        XRD_PLUGINCONFDIR: $PREFIX/etc/xrootd/client.plugins.d
+        XRDCP_ALLOW_HTTP: "true"
+        XRD_CURLNUMTHREADS: "1"
+        XRD_PELICANUSEAUTHHEADERS: "true"
+        XRD_LOGLEVEL: Debug
+      content:
+        - test -d $PREFIX/etc/xrootd/client.plugins.d
+        - test -f $PREFIX/lib/libXrdClPelican-5.so
+        - test_fdpio
+
+about:
+  homepage: https://github.com/GA-FDP/libfdpio
+  license: Apache-2.0
+  license_file: LICENSE
+  summary: Fusion Data Platform I/O library for XRootD access
+  description: |
+    libfdpio provides a C/C++ interface for accessing files through XRootD
+    protocols, specifically designed for the Fusion Data Platform. It supports
+    various XRootD-compatible protocols including Pelican, HTTP, and HTTPS.
+  repository: https://github.com/GA-FDP/libfdpio
+
+extra:
+  recipe-maintainers:
+    - sammuli
