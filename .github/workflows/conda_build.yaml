@@ -30,11 +30,7 @@ jobs:
           BEARER_TOKEN: ${{ secrets.BEARER_TOKEN }}
         run: |
           pixi global install rattler-build
-          mkdir -p ${HOME}/outdir
-          rattler-build build --recipe recipe/ \
-            --channel ga-fdp \
-            --channel conda-forge \
-            --output-dir ${HOME}/outdir
+          ./build_package.sh ${HOME}/outdir
 
       - name: Upload to Anaconda
         if: startsWith(github.ref, 'refs/tags/release-')
