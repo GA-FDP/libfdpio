@@ -39,5 +39,8 @@ jobs:
       - name: Upload to Anaconda
         if: startsWith(github.ref, 'refs/tags/release-')
         run: |
-          pixi global install anaconda-client
-          anaconda -t ${{ secrets.ANACONDA_API_TOKEN }} upload --force ${HOME}/outdir/linux-64/*.conda
+          rattler-build upload anaconda \
+            --owner ga-fdp \
+            --api-key ${{ secrets.ANACONDA_API_TOKEN }} \
+            --force \
+            ${HOME}/outdir/linux-64/*.conda
