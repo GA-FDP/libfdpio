@@ -14,7 +14,7 @@ set(CMAKE_FIND_LIBRARY_SUFFIXES .so .so.1 .so.0)
 # Find XRootD libraries manually (conda doesn't provide .pc files)
 # Look for the library directory
 find_path(XROOTD_LIB_DIR
-    NAMES libXrdPosixPreload.so
+    NAMES libXrdPosix.so
     HINTS ${CMAKE_PREFIX_PATH}/lib $ENV{PREFIX}/lib $ENV{CONDA_PREFIX}/lib
 )
 
@@ -25,7 +25,7 @@ find_path(XROOTD_INCLUDE_DIR
 
 # Check if we found everything
 if(NOT XROOTD_LIB_DIR)
-    message(FATAL_ERROR "XrdPosixPreload library not found. Make sure XRootD is installed.")
+    message(FATAL_ERROR "XrdPosix library not found. Make sure xrootd is installed.")
 endif()
 
 if(NOT XROOTD_INCLUDE_DIR)
@@ -53,7 +53,7 @@ target_link_options(fdpio PRIVATE "LINKER:-Bdynamic")
 
 # Link against XRootD and dependencies dynamically
 target_link_directories(fdpio PUBLIC ${XROOTD_LIB_DIR})
-target_link_libraries(fdpio XrdCl XrdPosixPreload XrdPosix curl ssl crypto)
+target_link_libraries(fdpio XrdCl XrdPosix ${CMAKE_DL_LIBS} curl ssl crypto)
 
 # Set library properties
 set_target_properties(fdpio PROPERTIES

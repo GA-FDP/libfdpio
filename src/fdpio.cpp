@@ -16,13 +16,14 @@ limitations under the License.
 
 #include <fdpio.h>
 
-#include <XrdPosix/XrdPosixExtern.hh>
 #include <XrdPosix/XrdPosixXrootdPath.hh>
 
 #include <cstdarg>
 #include <cstdlib>
 #include <cstring>
 #include <cerrno>
+#include <cstdio>
+#include <dlfcn.h>
 #include <fstream>
 #include <string>
 
@@ -36,6 +37,95 @@ static void set_error(const char *msg) {
 static void set_error_errno() {
     set_error(strerror(errno));
 }
+
+/* Function pointer types for XrdPosix_* API */
+typedef int        (*XrdPosix_Open_t)(const char *, int, ...);
+typedef int        (*XrdPosix_Close_t)(int);
+typedef ssize_t    (*XrdPosix_Read_t)(int, void *, size_t);
+typedef ssize_t    (*XrdPosix_Write_t)(int, const void *, size_t);
+typedef ssize_t    (*XrdPosix_Pread_t)(int, void *, size_t, off_t);
+typedef ssize_t    (*XrdPosix_Pwrite_t)(int, const void *, size_t, off_t);
+typedef off_t      (*XrdPosix_Lseek_t)(int, off_t, int);
+typedef int        (*XrdPosix_Fstat_t)(int, struct stat *);
+typedef int        (*XrdPosix_Stat_t)(const char *, struct stat *);
+typedef int        (*XrdPosix_Unlink_t)(const char *);
+typedef int        (*XrdPosix_Rename_t)(const char *, const char *);
+typedef int        (*XrdPosix_Mkdir_t)(const char *, mode_t);
+typedef int        (*XrdPosix_Rmdir_t)(const char *);
+typedef DIR *      (*XrdPosix_Opendir_t)(const char *);
+typedef struct dirent * (*XrdPosix_Readdir_t)(DIR *);
+typedef int        (*XrdPosix_Closedir_t)(DIR *);
+typedef int        (*XrdPosix_isMyPath_t)(const char *);
+
+static struct {
+    void *handle;
+    XrdPosix_Open_t     Open;
+    XrdPosix_Close_t    Close;
+    XrdPosix_Read_t     Read;
+    XrdPosix_Write_t    Write;
+    XrdPosix_Pread_t    Pread;
+    XrdPosix_Pwrite_t   Pwrite;
+    XrdPosix_Lseek_t    Lseek;
+    XrdPosix_Fstat_t    Fstat;
+    XrdPosix_Stat_t     Stat;
+    XrdPosix_Unlink_t   Unlink;
+    XrdPosix_Rename_t   Rename;
+    XrdPosix_Mkdir_t    Mkdir;
+    XrdPosix_Rmdir_t    Rmdir;
+    XrdPosix_Opendir_t  Opendir;
+    XrdPosix_Readdir_t  Readdir;
+    XrdPosix_Closedir_t Closedir;
+    XrdPosix_isMyPath_t isMyPath;
+} xrd = {};
+
+#define LOAD_SYM(name) \
+    xrd.name = (XrdPosix_##name##_t)dlsym(xrd.handle, "XrdPosix_" #name); \
+    if (!xrd.name) { \
+        fprintf(stderr, "fdpio: dlsym XrdPosix_%s: %s\n", #name, dlerror()); \
+        ok = false; \
+    }
+
+__attribute__((constructor))
+static void fdpio_load_xrdposix(void) {
+    xrd.handle = dlopen("libXrdPosixPreload.so", RTLD_LAZY | RTLD_LOCAL);
+    if (!xrd.handle)
+        xrd.handle = dlopen("libXrdPosixPreload.so.2", RTLD_LAZY | RTLD_LOCAL);
+    if (!xrd.handle) {
+        fprintf(stderr, "fdpio: cannot load libXrdPosixPreload.so: %s\n", dlerror());
+        return;
+    }
+
+    bool ok = true;
+    LOAD_SYM(Open)
+    LOAD_SYM(Close)
+    LOAD_SYM(Read)
+    LOAD_SYM(Write)
+    LOAD_SYM(Pread)
+    LOAD_SYM(Pwrite)
+    LOAD_SYM(Lseek)
+    LOAD_SYM(Fstat)
+    LOAD_SYM(Stat)
+    LOAD_SYM(Unlink)
+    LOAD_SYM(Rename)
+    LOAD_SYM(Mkdir)
+    LOAD_SYM(Rmdir)
+    LOAD_SYM(Opendir)
+    LOAD_SYM(Readdir)
+    LOAD_SYM(Closedir)
+
+    /* XrdPosix_isMyPath has C++ linkage (not inside extern "C") */
+    xrd.isMyPath = (XrdPosix_isMyPath_t)dlsym(xrd.handle,
+                                               "_Z17XrdPosix_isMyPathPKc");
+    if (!xrd.isMyPath) {
+        fprintf(stderr, "fdpio: dlsym XrdPosix_isMyPath: %s\n", dlerror());
+        ok = false;
+    }
+
+    if (!ok)
+        fprintf(stderr, "fdpio: some XrdPosix symbols could not be resolved\n");
+}
+
+#undef LOAD_SYM
 
 extern "C" {
 
@@ -92,6 +182,7 @@ void fdpio_cleanup(void) {
 }
 
 int fdpio_open(const char *path, int oflag, ...) {
+    if (!xrd.Open) { errno = ENOSYS; return -1; }
     mode_t mode = 0;
     if (oflag & O_CREAT) {
         va_list ap;
@@ -99,116 +190,132 @@ int fdpio_open(const char *path, int oflag, ...) {
         mode = va_arg(ap, int);
         va_end(ap);
     }
-    int fd = XrdPosix_Open(path, oflag, mode);
+    int fd = xrd.Open(path, oflag, mode);
     if (fd < 0)
         set_error_errno();
     return fd;
 }
 
 int fdpio_close(int fildes) {
-    int rc = XrdPosix_Close(fildes);
+    if (!xrd.Close) { errno = ENOSYS; return -1; }
+    int rc = xrd.Close(fildes);
     if (rc < 0)
         set_error_errno();
     return rc;
 }
 
 ssize_t fdpio_read(int fildes, void *buf, size_t nbyte) {
-    ssize_t rc = XrdPosix_Read(fildes, buf, nbyte);
+    if (!xrd.Read) { errno = ENOSYS; return -1; }
+    ssize_t rc = xrd.Read(fildes, buf, nbyte);
     if (rc < 0)
         set_error_errno();
     return rc;
 }
 
 ssize_t fdpio_write(int fildes, const void *buf, size_t nbyte) {
-    ssize_t rc = XrdPosix_Write(fildes, buf, nbyte);
+    if (!xrd.Write) { errno = ENOSYS; return -1; }
+    ssize_t rc = xrd.Write(fildes, buf, nbyte);
     if (rc < 0)
         set_error_errno();
     return rc;
 }
 
 ssize_t fdpio_pread(int fildes, void *buf, size_t nbyte, off_t offset) {
-    ssize_t rc = XrdPosix_Pread(fildes, buf, nbyte, offset);
+    if (!xrd.Pread) { errno = ENOSYS; return -1; }
+    ssize_t rc = xrd.Pread(fildes, buf, nbyte, offset);
     if (rc < 0)
         set_error_errno();
     return rc;
 }
 
 ssize_t fdpio_pwrite(int fildes, const void *buf, size_t nbyte, off_t offset) {
-    ssize_t rc = XrdPosix_Pwrite(fildes, buf, nbyte, offset);
+    if (!xrd.Pwrite) { errno = ENOSYS; return -1; }
+    ssize_t rc = xrd.Pwrite(fildes, buf, nbyte, offset);
     if (rc < 0)
         set_error_errno();
     return rc;
 }
 
 off_t fdpio_lseek(int fildes, off_t offset, int whence) {
-    off_t rc = XrdPosix_Lseek(fildes, offset, whence);
+    if (!xrd.Lseek) { errno = ENOSYS; return -1; }
+    off_t rc = xrd.Lseek(fildes, offset, whence);
     if (rc < 0)
         set_error_errno();
     return rc;
 }
 
 int fdpio_fstat(int fildes, struct stat *buf) {
-    int rc = XrdPosix_Fstat(fildes, buf);
+    if (!xrd.Fstat) { errno = ENOSYS; return -1; }
+    int rc = xrd.Fstat(fildes, buf);
     if (rc < 0)
         set_error_errno();
     return rc;
 }
 
 int fdpio_stat(const char *path, struct stat *buf) {
-    int rc = XrdPosix_Stat(path, buf);
+    if (!xrd.Stat) { errno = ENOSYS; return -1; }
+    int rc = xrd.Stat(path, buf);
     if (rc < 0)
         set_error_errno();
     return rc;
 }
 
 int fdpio_unlink(const char *path) {
-    int rc = XrdPosix_Unlink(path);
+    if (!xrd.Unlink) { errno = ENOSYS; return -1; }
+    int rc = xrd.Unlink(path);
     if (rc < 0)
         set_error_errno();
     return rc;
 }
 
 int fdpio_rename(const char *oname, const char *nname) {
-    int rc = XrdPosix_Rename(oname, nname);
+    if (!xrd.Rename) { errno = ENOSYS; return -1; }
+    int rc = xrd.Rename(oname, nname);
     if (rc < 0)
         set_error_errno();
     return rc;
 }
 
 int fdpio_mkdir(const char *path, mode_t mode) {
-    int rc = XrdPosix_Mkdir(path, mode);
+    if (!xrd.Mkdir) { errno = ENOSYS; return -1; }
+    int rc = xrd.Mkdir(path, mode);
     if (rc < 0)
         set_error_errno();
     return rc;
 }
 
 int fdpio_rmdir(const char *path) {
-    int rc = XrdPosix_Rmdir(path);
+    if (!xrd.Rmdir) { errno = ENOSYS; return -1; }
+    int rc = xrd.Rmdir(path);
     if (rc < 0)
         set_error_errno();
     return rc;
 }
 
 DIR *fdpio_opendir(const char *path) {
-    DIR *d = XrdPosix_Opendir(path);
+    if (!xrd.Opendir) { errno = ENOSYS; return NULL; }
+    DIR *d = xrd.Opendir(path);
     if (!d)
         set_error_errno();
     return d;
 }
 
 struct dirent *fdpio_readdir(DIR *dirp) {
-    return XrdPosix_Readdir(dirp);
+    if (!xrd.Readdir) { errno = ENOSYS; return NULL; }
+    return xrd.Readdir(dirp);
 }
 
 int fdpio_closedir(DIR *dirp) {
-    int rc = XrdPosix_Closedir(dirp);
+    if (!xrd.Closedir) { errno = ENOSYS; return -1; }
+    int rc = xrd.Closedir(dirp);
     if (rc < 0)
         set_error_errno();
     return rc;
 }
 
 int fdpio_is_url(const char *path) {
-    return XrdPosix_isMyPath(path);
+    if (!xrd.isMyPath) return 0;
+    return xrd.isMyPath(path);
 }
 
 void fdpio_set_token(const char *token) {
