@@ -325,8 +325,95 @@ ssize_t fdpio_write(int fildes, const void *buf, size_t nbyte) {
     }
     return static_cast<ssize_t>(nbyte);
 }
-off_t fdpio_lseek(int, off_t, int)            { errno = ENOSYS; return -1; }
-int fdpio_stat(const char *, struct stat *)   { errno = ENOSYS; return -1; }
+off_t fdpio_lseek(int fildes, off_t offset, int whence) {
+    if (fildes < SYNTH_FD_BASE) {
+        off_t r = ::lseek(fildes, offset, whence);
+        if (r == (off_t)-1) set_error_errno();
+        return r;
+    }
+
+    std::lock_guard<std::mutex> lk(g_table_mu);
+    auto it = g_table.find(fildes);
+    if (it == g_table.end()) {
+        errno = EBADF; set_error("fdpio_lseek: bad fd"); return -1;
+    }
+    FdEntry &entry = it->second;
+    uint64_t new_pos = entry.pos;
+
+    switch (whence) {
+        case SEEK_SET:
+            if (offset < 0) { errno = EINVAL; return -1; }
+            new_pos = static_cast<uint64_t>(offset);
+            break;
+        case SEEK_CUR: {
+            int64_t signed_pos = static_cast<int64_t>(entry.pos) + offset;
+            if (signed_pos < 0) { errno = EINVAL; return -1; }
+            new_pos = static_cast<uint64_t>(signed_pos);
+            break;
+        }
+        case SEEK_END: {
+            // Issue Stat to learn the size; do it without releasing the
+            // lock since Stat is fast (cached XrdCl response) and lseek
+            // is rarely called from many threads at once.
+            XrdCl::StatInfo *info = nullptr;
+            auto st = entry.file->Stat(false, info);
+            if (!st.IsOK()) {
+                delete info;
+                set_error_status(st);
+                errno = errno_from_status(st);
+                return -1;
+            }
+            int64_t signed_pos =
+                static_cast<int64_t>(info->GetSize()) + offset;
+            delete info;
+            if (signed_pos < 0) { errno = EINVAL; return -1; }
+            new_pos = static_cast<uint64_t>(signed_pos);
+            break;
+        }
+        default:
+            errno = EINVAL;
+            set_error("fdpio_lseek: bad whence");
+            return -1;
+    }
+
+    entry.pos = new_pos;
+    return static_cast<off_t>(new_pos);
+}
+
+int fdpio_stat(const char *path, struct stat *out) {
+    if (!path || !out) { errno = EINVAL; return -1; }
+
+    if (!fdpio_is_url(path)) {
+        int rc = ::stat(path, out);
+        if (rc < 0) set_error_errno();
+        return rc;
+    }
+
+    XrdCl::URL url(std::string{path});
+    if (!url.IsValid()) {
+        errno = EINVAL; set_error("fdpio_stat: invalid URL"); return -1;
+    }
+    XrdCl::FileSystem fs(url);
+    XrdCl::StatInfo *info = nullptr;
+    auto st = fs.Stat(url.GetPath(), info);
+    if (!st.IsOK()) {
+        delete info;
+        set_error_status(st);
+        errno = errno_from_status(st);
+        return -1;
+    }
+
+    std::memset(out, 0, sizeof(*out));
+    out->st_size  = info->GetSize();
+    out->st_mtime = info->GetModTime();
+    mode_t mode   = 0;
+    if (info->TestFlags(XrdCl::StatInfo::IsReadable)) mode |= S_IRUSR;
+    if (info->TestFlags(XrdCl::StatInfo::IsWritable)) mode |= S_IWUSR;
+    mode |= info->TestFlags(XrdCl::StatInfo::IsDir) ? S_IFDIR : S_IFREG;
+    out->st_mode = mode;
+    delete info;
+    return 0;
+}
 
 }  // extern "C"
 
