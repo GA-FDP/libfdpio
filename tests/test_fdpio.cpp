@@ -57,6 +57,35 @@ const char *test_url() {
     return (override_url && *override_url) ? override_url : kDefaultTestUrl;
 }
 
+// URL tests run by default. They auto-skip when the environment can't
+// support them:
+//   1. FDPIO_SKIP_URL_TESTS is set — explicit opt-out (offline dev).
+//   2. XRD_PLUGINCONFDIR is unset — without it, XrdCl can't load the
+//      xrdcl-pelican-fdp plugin and pelican:// URLs fail at open.
+//      The conda recipe sets it to $PREFIX/etc/xrootd/client.plugins.d,
+//      and fdp_env.sh sets it for local dev.
+//   3. Federation auth not available — neither BEARER_TOKEN env nor a
+//      readable ~/.fdp/token file (fdpio_init reads the file as a
+//      fallback). Forked-PR CI runs hit this path because GitHub doesn't
+//      share secrets with forks.
+// Returns nullptr if URL tests should run, or a non-null reason string.
+const char *url_skip_reason() {
+    if (std::getenv("FDPIO_SKIP_URL_TESTS")) {
+        return "FDPIO_SKIP_URL_TESTS is set";
+    }
+    const char *plugin = std::getenv("XRD_PLUGINCONFDIR");
+    if (!plugin || !*plugin) {
+        return "XRD_PLUGINCONFDIR not set (xrdcl-pelican-fdp plugin won't load)";
+    }
+    const char *tok = std::getenv("BEARER_TOKEN");
+    if (tok && *tok) return nullptr;
+    if (const char *home = std::getenv("HOME")) {
+        std::string token_path = std::string(home) + "/.fdp/token";
+        if (::access(token_path.c_str(), R_OK) == 0) return nullptr;
+    }
+    return "no federation auth available (BEARER_TOKEN env unset and ~/.fdp/token missing)";
+}
+
 }  // namespace
 
 TEST_CASE("local open/write/read/close round-trip") {
@@ -121,16 +150,16 @@ TEST_CASE("fdpio_is_url honors FDPIO_PROTOCOLS env") {
 }
 
 TEST_CASE("URL open/read/close round-trip") {
-    if (!std::getenv("FDPIO_TEST_URL_ENABLE")) {
-        MESSAGE("Skipping URL test: set FDPIO_TEST_URL_ENABLE=1 to run");
+    if (auto reason = url_skip_reason()) {
+        MESSAGE("Skipping URL test: " << reason);
         return;
     }
     REQUIRE(fdpio_init() == 0);
 
     int fd = fdpio_open(test_url(), O_RDONLY);
     REQUIRE_MESSAGE(fd >= 0,
-        "URL open failed (the URL test was opted in via FDPIO_TEST_URL_ENABLE "
-        "but the URL is unreachable — fix the env or override with FDPIO_TEST_URL): "
+        "URL open failed (set FDPIO_SKIP_URL_TESTS=1 to skip, or override "
+        "the test URL via FDPIO_TEST_URL): "
         << fdpio_error_string());
     CHECK(fd >= (1 << 20));   // synthetic fd
 
@@ -233,8 +262,8 @@ TEST_CASE("local fd: chunked read to EOF terminates with 0") {
 }
 
 TEST_CASE("URL fd: chunked read to EOF terminates with 0, not -1") {
-    if (!std::getenv("FDPIO_TEST_URL_ENABLE")) {
-        MESSAGE("Skipping URL EOF test: set FDPIO_TEST_URL_ENABLE=1 to run");
+    if (auto reason = url_skip_reason()) {
+        MESSAGE("Skipping URL EOF test: " << reason);
         return;
     }
     REQUIRE(fdpio_init() == 0);
@@ -276,8 +305,8 @@ TEST_CASE("URL fd: chunked read to EOF terminates with 0, not -1") {
 }
 
 TEST_CASE("URL fd: oversized read clamps at EOF") {
-    if (!std::getenv("FDPIO_TEST_URL_ENABLE")) {
-        MESSAGE("Skipping URL EOF clamp test: set FDPIO_TEST_URL_ENABLE=1 to run");
+    if (auto reason = url_skip_reason()) {
+        MESSAGE("Skipping URL EOF clamp test: " << reason);
         return;
     }
     REQUIRE(fdpio_init() == 0);
@@ -308,8 +337,8 @@ TEST_CASE("URL fd: oversized read clamps at EOF") {
 }
 
 TEST_CASE("URL fd: read at EOF after seek returns 0") {
-    if (!std::getenv("FDPIO_TEST_URL_ENABLE")) {
-        MESSAGE("Skipping URL seek-to-EOF test: set FDPIO_TEST_URL_ENABLE=1 to run");
+    if (auto reason = url_skip_reason()) {
+        MESSAGE("Skipping URL seek-to-EOF test: " << reason);
         return;
     }
     REQUIRE(fdpio_init() == 0);
