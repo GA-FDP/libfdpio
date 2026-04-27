@@ -175,7 +175,58 @@ const char *fdpio_error_string(void) {
 // Returning ENOSYS means tests that only exercise init/cleanup/is_url pass
 // while remaining tasks are landed.
 
-int fdpio_open(const char *, int, ...)        { errno = ENOSYS; return -1; }
+int fdpio_open(const char *path, int oflag, ...) {
+    if (!path) { errno = EINVAL; set_error("null path"); return -1; }
+
+    // Local path: native POSIX. Returns a real kernel fd (< SYNTH_FD_BASE).
+    if (!fdpio_is_url(path)) {
+        mode_t mode = 0;
+        if (oflag & O_CREAT) {
+            va_list ap;
+            va_start(ap, oflag);
+            mode = static_cast<mode_t>(va_arg(ap, int));
+            va_end(ap);
+        }
+        int fd = ::open(path, oflag, mode);
+        if (fd < 0) set_error_errno();
+        return fd;
+    }
+
+    // URL path: open via XrdCl::File and return a synthetic fd.
+    using XrdCl::OpenFlags;
+
+    // Translate POSIX open flags to XrdCl::OpenFlags. v2 only supports
+    // the cases ptdata and mdsplus actually use:
+    //   O_RDONLY            -> Read
+    //   O_WRONLY|O_CREAT    -> New (or Delete if O_TRUNC)
+    //   O_RDWR              -> Update
+    OpenFlags::Flags xrd_flags;
+    int access = oflag & O_ACCMODE;
+    if (access == O_RDONLY) {
+        xrd_flags = OpenFlags::Read;
+    } else if (access == O_WRONLY) {
+        xrd_flags = (oflag & O_TRUNC) ? OpenFlags::Delete : OpenFlags::New;
+    } else if (access == O_RDWR) {
+        xrd_flags = OpenFlags::Update;
+    } else {
+        errno = EINVAL;
+        set_error("fdpio_open: unsupported access flags");
+        return -1;
+    }
+
+    auto file = std::make_unique<XrdCl::File>();
+    auto st = file->Open(std::string(path), xrd_flags);
+    if (!st.IsOK()) {
+        set_error_status(st);
+        errno = errno_from_status(st);
+        return -1;
+    }
+
+    std::lock_guard<std::mutex> lk(g_table_mu);
+    int fd = g_next_fd++;
+    g_table.emplace(fd, FdEntry{std::move(file), 0});
+    return fd;
+}
 int fdpio_close(int)                          { errno = ENOSYS; return -1; }
 ssize_t fdpio_read(int, void *, size_t)       { errno = ENOSYS; return -1; }
 ssize_t fdpio_write(int, const void *, size_t){ errno = ENOSYS; return -1; }
