@@ -14,316 +14,413 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+// libfdpio v2.0: POSIX-style I/O over native POSIX (local) and
+// XrdCl::File (URL). No XrdPosix in the chain — the destructor race in
+// XrdPosixObject::Shutdown that aborted ~50% of pelican-using processes
+// at exit is gone because libXrdPosixPreload is never loaded.
+
 #include <fdpio.h>
 
-#include <XrdPosix/XrdPosixXrootdPath.hh>
+#include <XrdCl/XrdClFile.hh>
+#include <XrdCl/XrdClFileSystem.hh>
+#include <XrdCl/XrdClURL.hh>
+#include <XrdCl/XrdClXRootDResponses.hh>
 
+#include <atomic>
+#include <cerrno>
 #include <cstdarg>
 #include <cstdlib>
 #include <cstring>
-#include <cerrno>
-#include <cstdio>
-#include <dlfcn.h>
 #include <fstream>
+#include <memory>
+#include <mutex>
 #include <string>
+#include <unordered_map>
+#include <vector>
 
-static thread_local char fdpio_errbuf[256];
+namespace {
 
-static void set_error(const char *msg) {
-    strncpy(fdpio_errbuf, msg, sizeof(fdpio_errbuf) - 1);
-    fdpio_errbuf[sizeof(fdpio_errbuf) - 1] = '\0';
+// Synthetic fds for URL-backed handles. Real kernel fds are
+// effectively always < 2^20 even under heavy load; this gap keeps
+// the two namespaces fully disjoint so fdpio_read/write/lseek/close
+// can dispatch by fd value alone.
+constexpr int SYNTH_FD_BASE = 1 << 20;
+
+struct FdEntry {
+    std::unique_ptr<XrdCl::File> file;
+    uint64_t pos = 0;   // libfdpio tracks lseek position; XrdCl is
+                        // offset-based and has no kernel cursor.
+};
+
+std::mutex                          g_table_mu;
+std::unordered_map<int, FdEntry>    g_table;
+int                                 g_next_fd = SYNTH_FD_BASE;
+
+thread_local char                   g_errbuf[256];
+
+// URL schemes we recognize, populated by fdpio_init from
+// FDPIO_PROTOCOLS env or a default list.
+std::vector<std::string>            g_protocols;
+
+void set_error(const char *msg) {
+    std::strncpy(g_errbuf, msg, sizeof(g_errbuf) - 1);
+    g_errbuf[sizeof(g_errbuf) - 1] = '\0';
 }
 
-static void set_error_errno() {
-    set_error(strerror(errno));
+void set_error_status(const XrdCl::XRootDStatus &st) {
+    set_error(st.ToString().c_str());
 }
 
-/* Function pointer types for XrdPosix_* API */
-typedef int        (*XrdPosix_Open_t)(const char *, int, ...);
-typedef int        (*XrdPosix_Close_t)(int);
-typedef ssize_t    (*XrdPosix_Read_t)(int, void *, size_t);
-typedef ssize_t    (*XrdPosix_Write_t)(int, const void *, size_t);
-typedef ssize_t    (*XrdPosix_Pread_t)(int, void *, size_t, off_t);
-typedef ssize_t    (*XrdPosix_Pwrite_t)(int, const void *, size_t, off_t);
-typedef off_t      (*XrdPosix_Lseek_t)(int, off_t, int);
-typedef int        (*XrdPosix_Fstat_t)(int, struct stat *);
-typedef int        (*XrdPosix_Stat_t)(const char *, struct stat *);
-typedef int        (*XrdPosix_Unlink_t)(const char *);
-typedef int        (*XrdPosix_Rename_t)(const char *, const char *);
-typedef int        (*XrdPosix_Mkdir_t)(const char *, mode_t);
-typedef int        (*XrdPosix_Rmdir_t)(const char *);
-typedef DIR *      (*XrdPosix_Opendir_t)(const char *);
-typedef struct dirent * (*XrdPosix_Readdir_t)(DIR *);
-typedef int        (*XrdPosix_Closedir_t)(DIR *);
-typedef int        (*XrdPosix_isMyPath_t)(const char *);
-
-static struct {
-    void *handle;
-    XrdPosix_Open_t     Open;
-    XrdPosix_Close_t    Close;
-    XrdPosix_Read_t     Read;
-    XrdPosix_Write_t    Write;
-    XrdPosix_Pread_t    Pread;
-    XrdPosix_Pwrite_t   Pwrite;
-    XrdPosix_Lseek_t    Lseek;
-    XrdPosix_Fstat_t    Fstat;
-    XrdPosix_Stat_t     Stat;
-    XrdPosix_Unlink_t   Unlink;
-    XrdPosix_Rename_t   Rename;
-    XrdPosix_Mkdir_t    Mkdir;
-    XrdPosix_Rmdir_t    Rmdir;
-    XrdPosix_Opendir_t  Opendir;
-    XrdPosix_Readdir_t  Readdir;
-    XrdPosix_Closedir_t Closedir;
-    XrdPosix_isMyPath_t isMyPath;
-} xrd = {};
-
-#define LOAD_SYM(name) \
-    xrd.name = (XrdPosix_##name##_t)dlsym(xrd.handle, "XrdPosix_" #name); \
-    if (!xrd.name) { \
-        fprintf(stderr, "fdpio: dlsym XrdPosix_%s: %s\n", #name, dlerror()); \
-        ok = false; \
-    }
-
-__attribute__((constructor))
-static void fdpio_load_xrdposix(void) {
-    xrd.handle = dlopen("libXrdPosixPreload.so", RTLD_LAZY | RTLD_LOCAL);
-    if (!xrd.handle)
-        xrd.handle = dlopen("libXrdPosixPreload.so.2", RTLD_LAZY | RTLD_LOCAL);
-    if (!xrd.handle) {
-        fprintf(stderr, "fdpio: cannot load libXrdPosixPreload.so: %s\n", dlerror());
-        return;
-    }
-
-    bool ok = true;
-    LOAD_SYM(Open)
-    LOAD_SYM(Close)
-    LOAD_SYM(Read)
-    LOAD_SYM(Write)
-    LOAD_SYM(Pread)
-    LOAD_SYM(Pwrite)
-    LOAD_SYM(Lseek)
-    LOAD_SYM(Fstat)
-    LOAD_SYM(Stat)
-    LOAD_SYM(Unlink)
-    LOAD_SYM(Rename)
-    LOAD_SYM(Mkdir)
-    LOAD_SYM(Rmdir)
-    LOAD_SYM(Opendir)
-    LOAD_SYM(Readdir)
-    LOAD_SYM(Closedir)
-
-    /* XrdPosix_isMyPath has C++ linkage (not inside extern "C") */
-    xrd.isMyPath = (XrdPosix_isMyPath_t)dlsym(xrd.handle,
-                                               "_Z17XrdPosix_isMyPathPKc");
-    if (!xrd.isMyPath) {
-        fprintf(stderr, "fdpio: dlsym XrdPosix_isMyPath: %s\n", dlerror());
-        ok = false;
-    }
-
-    if (!ok)
-        fprintf(stderr, "fdpio: some XrdPosix symbols could not be resolved\n");
+void set_error_errno() {
+    set_error(std::strerror(errno));
 }
 
-#undef LOAD_SYM
+// Map XRootD error codes to errno. Anything we don't have a clean
+// mapping for becomes EIO so callers can still fail predictably.
+int errno_from_status(const XrdCl::XRootDStatus &st) {
+    using namespace XrdCl;
+    switch (st.code) {
+        case errNotFound:         return ENOENT;
+        case errAuthFailed:       return EACCES;
+        case errOperationExpired: return ETIMEDOUT;
+        case errInvalidArgs:      return EINVAL;
+        case errSocketError:      return ECONNRESET;
+        case errNotSupported:     return ENOTSUP;
+        default:                  return EIO;
+    }
+}
+
+void parse_protocols(const char *raw) {
+    g_protocols.clear();
+    std::string s = raw ? raw : "";
+    size_t start = 0;
+    while (start < s.size()) {
+        size_t end = s.find(',', start);
+        if (end == std::string::npos) end = s.size();
+        std::string proto = s.substr(start, end - start);
+        if (!proto.empty()) g_protocols.push_back(std::move(proto));
+        start = end + 1;
+    }
+}
+
+}  // namespace
 
 extern "C" {
 
 int fdpio_init(void) {
-    /* Register protocols from FDPIO_PROTOCOLS (default: pelican,http,https) */
-    const char *protos_env = getenv("FDPIO_PROTOCOLS");
-    std::string protos = protos_env ? protos_env : "pelican,http,https";
+    // Protocol list (URL schemes routed through XrdCl).
+    const char *protos = std::getenv("FDPIO_PROTOCOLS");
+    parse_protocols(protos ? protos
+                            : "pelican,http,https,xroot,xroots,root,roots");
 
-    size_t start = 0;
-    while (start < protos.size()) {
-        size_t end = protos.find(',', start);
-        if (end == std::string::npos)
-            end = protos.size();
-        std::string proto = protos.substr(start, end - start);
-        if (!proto.empty()) {
-            std::string proto_url = proto + "://";
-            XrdPosixXrootPath::AddProto(proto_url.c_str());
-        }
-        start = end + 1;
-    }
-
-    /* Set XRDCP_ALLOW_HTTP if not already set */
-    setenv("XRDCP_ALLOW_HTTP", "true", 0);
-
-    /* Resolve auth token: BEARER_TOKEN -> BEARER_TOKEN_FILE -> ~/.fdp/token */
-    if (!getenv("BEARER_TOKEN")) {
-        const char *token_file = getenv("BEARER_TOKEN_FILE");
+    // Resolve auth token: BEARER_TOKEN env wins; else BEARER_TOKEN_FILE;
+    // else first line of ~/.fdp/token. Matches v1 behavior.
+    if (!std::getenv("BEARER_TOKEN")) {
+        const char *token_file = std::getenv("BEARER_TOKEN_FILE");
         std::string token_path;
-        if (token_file) {
+        if (token_file && *token_file) {
             token_path = token_file;
         } else {
-            const char *home = getenv("HOME");
-            if (home) {
-                token_path = std::string(home) + "/.fdp/token";
-            }
+            const char *home = std::getenv("HOME");
+            if (home) token_path = std::string(home) + "/.fdp/token";
         }
         if (!token_path.empty()) {
             std::ifstream ifs(token_path);
             if (ifs.is_open()) {
                 std::string token;
                 std::getline(ifs, token);
-                if (!token.empty()) {
-                    setenv("BEARER_TOKEN", token.c_str(), 1);
-                }
+                if (!token.empty()) setenv("BEARER_TOKEN", token.c_str(), 1);
             }
         }
     }
 
-    fdpio_errbuf[0] = '\0';
+    // Allow plaintext HTTP for xrdcl-pelican (matches v1).
+    setenv("XRDCP_ALLOW_HTTP", "true", 0);
+
+    g_errbuf[0] = '\0';
     return 0;
 }
 
 void fdpio_cleanup(void) {
-}
-
-int fdpio_open(const char *path, int oflag, ...) {
-    if (!xrd.Open) { errno = ENOSYS; return -1; }
-    mode_t mode = 0;
-    if (oflag & O_CREAT) {
-        va_list ap;
-        va_start(ap, oflag);
-        mode = va_arg(ap, int);
-        va_end(ap);
+    // Close any URL handles still open. Native fds are the caller's
+    // responsibility (we only track the ones we minted).
+    std::lock_guard<std::mutex> lk(g_table_mu);
+    for (auto &kv : g_table) {
+        if (kv.second.file) kv.second.file->Close();
     }
-    int fd = xrd.Open(path, oflag, mode);
-    if (fd < 0)
-        set_error_errno();
-    return fd;
-}
-
-int fdpio_close(int fildes) {
-    if (!xrd.Close) { errno = ENOSYS; return -1; }
-    int rc = xrd.Close(fildes);
-    if (rc < 0)
-        set_error_errno();
-    return rc;
-}
-
-ssize_t fdpio_read(int fildes, void *buf, size_t nbyte) {
-    if (!xrd.Read) { errno = ENOSYS; return -1; }
-    ssize_t rc = xrd.Read(fildes, buf, nbyte);
-    if (rc < 0)
-        set_error_errno();
-    return rc;
-}
-
-ssize_t fdpio_write(int fildes, const void *buf, size_t nbyte) {
-    if (!xrd.Write) { errno = ENOSYS; return -1; }
-    ssize_t rc = xrd.Write(fildes, buf, nbyte);
-    if (rc < 0)
-        set_error_errno();
-    return rc;
-}
-
-ssize_t fdpio_pread(int fildes, void *buf, size_t nbyte, off_t offset) {
-    if (!xrd.Pread) { errno = ENOSYS; return -1; }
-    ssize_t rc = xrd.Pread(fildes, buf, nbyte, offset);
-    if (rc < 0)
-        set_error_errno();
-    return rc;
-}
-
-ssize_t fdpio_pwrite(int fildes, const void *buf, size_t nbyte, off_t offset) {
-    if (!xrd.Pwrite) { errno = ENOSYS; return -1; }
-    ssize_t rc = xrd.Pwrite(fildes, buf, nbyte, offset);
-    if (rc < 0)
-        set_error_errno();
-    return rc;
-}
-
-off_t fdpio_lseek(int fildes, off_t offset, int whence) {
-    if (!xrd.Lseek) { errno = ENOSYS; return -1; }
-    off_t rc = xrd.Lseek(fildes, offset, whence);
-    if (rc < 0)
-        set_error_errno();
-    return rc;
-}
-
-int fdpio_fstat(int fildes, struct stat *buf) {
-    if (!xrd.Fstat) { errno = ENOSYS; return -1; }
-    int rc = xrd.Fstat(fildes, buf);
-    if (rc < 0)
-        set_error_errno();
-    return rc;
-}
-
-int fdpio_stat(const char *path, struct stat *buf) {
-    if (!xrd.Stat) { errno = ENOSYS; return -1; }
-    int rc = xrd.Stat(path, buf);
-    if (rc < 0)
-        set_error_errno();
-    return rc;
-}
-
-int fdpio_unlink(const char *path) {
-    if (!xrd.Unlink) { errno = ENOSYS; return -1; }
-    int rc = xrd.Unlink(path);
-    if (rc < 0)
-        set_error_errno();
-    return rc;
-}
-
-int fdpio_rename(const char *oname, const char *nname) {
-    if (!xrd.Rename) { errno = ENOSYS; return -1; }
-    int rc = xrd.Rename(oname, nname);
-    if (rc < 0)
-        set_error_errno();
-    return rc;
-}
-
-int fdpio_mkdir(const char *path, mode_t mode) {
-    if (!xrd.Mkdir) { errno = ENOSYS; return -1; }
-    int rc = xrd.Mkdir(path, mode);
-    if (rc < 0)
-        set_error_errno();
-    return rc;
-}
-
-int fdpio_rmdir(const char *path) {
-    if (!xrd.Rmdir) { errno = ENOSYS; return -1; }
-    int rc = xrd.Rmdir(path);
-    if (rc < 0)
-        set_error_errno();
-    return rc;
-}
-
-DIR *fdpio_opendir(const char *path) {
-    if (!xrd.Opendir) { errno = ENOSYS; return NULL; }
-    DIR *d = xrd.Opendir(path);
-    if (!d)
-        set_error_errno();
-    return d;
-}
-
-struct dirent *fdpio_readdir(DIR *dirp) {
-    if (!xrd.Readdir) { errno = ENOSYS; return NULL; }
-    return xrd.Readdir(dirp);
-}
-
-int fdpio_closedir(DIR *dirp) {
-    if (!xrd.Closedir) { errno = ENOSYS; return -1; }
-    int rc = xrd.Closedir(dirp);
-    if (rc < 0)
-        set_error_errno();
-    return rc;
+    g_table.clear();
 }
 
 int fdpio_is_url(const char *path) {
-    if (!xrd.isMyPath) return 0;
-    return xrd.isMyPath(path);
+    if (!path) return 0;
+    for (const auto &proto : g_protocols) {
+        size_t n = proto.size();
+        if (std::strncmp(path, proto.c_str(), n) == 0
+            && path[n] == ':' && path[n+1] == '/' && path[n+2] == '/') {
+            return 1;
+        }
+    }
+    return 0;
 }
 
 void fdpio_set_token(const char *token) {
-    setenv("BEARER_TOKEN", token, 1);
+    if (token) setenv("BEARER_TOKEN", token, 1);
 }
 
 const char *fdpio_error_string(void) {
-    return fdpio_errbuf;
+    return g_errbuf;
 }
 
-} /* extern "C" */
+// Stub implementations for the file-ops surface — filled in by later tasks.
+// Returning ENOSYS means tests that only exercise init/cleanup/is_url pass
+// while remaining tasks are landed.
+
+int fdpio_open(const char *path, int oflag, ...) {
+    if (!path) { errno = EINVAL; set_error("null path"); return -1; }
+
+    // Local path: native POSIX. Returns a real kernel fd (< SYNTH_FD_BASE).
+    if (!fdpio_is_url(path)) {
+        mode_t mode = 0;
+        if (oflag & O_CREAT) {
+            va_list ap;
+            va_start(ap, oflag);
+            mode = static_cast<mode_t>(va_arg(ap, int));
+            va_end(ap);
+        }
+        int fd = ::open(path, oflag, mode);
+        if (fd < 0) set_error_errno();
+        return fd;
+    }
+
+    // URL path: open via XrdCl::File and return a synthetic fd.
+    using XrdCl::OpenFlags;
+
+    // Translate POSIX open flags to XrdCl::OpenFlags. v2 only supports
+    // the cases ptdata and mdsplus actually use:
+    //   O_RDONLY            -> Read
+    //   O_WRONLY|O_CREAT    -> New (or Delete if O_TRUNC)
+    //   O_RDWR              -> Update
+    OpenFlags::Flags xrd_flags;
+    int access = oflag & O_ACCMODE;
+    if (access == O_RDONLY) {
+        xrd_flags = OpenFlags::Read;
+    } else if (access == O_WRONLY) {
+        xrd_flags = (oflag & O_TRUNC) ? OpenFlags::Delete : OpenFlags::New;
+    } else if (access == O_RDWR) {
+        xrd_flags = OpenFlags::Update;
+    } else {
+        errno = EINVAL;
+        set_error("fdpio_open: unsupported access flags");
+        return -1;
+    }
+
+    auto file = std::make_unique<XrdCl::File>();
+    auto st = file->Open(std::string(path), xrd_flags);
+    if (!st.IsOK()) {
+        set_error_status(st);
+        errno = errno_from_status(st);
+        return -1;
+    }
+
+    std::lock_guard<std::mutex> lk(g_table_mu);
+    int fd = g_next_fd++;
+    g_table.emplace(fd, FdEntry{std::move(file), 0});
+    return fd;
+}
+int fdpio_close(int fildes) {
+    if (fildes < SYNTH_FD_BASE) {
+        int rc = ::close(fildes);
+        if (rc < 0) set_error_errno();
+        return rc;
+    }
+
+    // Move the unique_ptr out of the table while holding the lock,
+    // then call Close() / let the destructor run *outside* the lock.
+    // XrdCl::File destruction can block (cancel pending callbacks);
+    // holding g_table_mu during that would deadlock other callers.
+    std::unique_ptr<XrdCl::File> file;
+    {
+        std::lock_guard<std::mutex> lk(g_table_mu);
+        auto it = g_table.find(fildes);
+        if (it == g_table.end()) {
+            errno = EBADF; set_error("fdpio_close: bad fd"); return -1;
+        }
+        file = std::move(it->second.file);
+        g_table.erase(it);
+    }
+    auto st = file->Close();
+    if (!st.IsOK()) {
+        set_error_status(st);
+        errno = errno_from_status(st);
+        return -1;
+    }
+    return 0;
+}
+
+ssize_t fdpio_read(int fildes, void *buf, size_t nbyte) {
+    if (fildes < SYNTH_FD_BASE) {
+        ssize_t n = ::read(fildes, buf, nbyte);
+        if (n < 0) set_error_errno();
+        return n;
+    }
+
+    XrdCl::File *file;
+    uint64_t off;
+    {
+        std::lock_guard<std::mutex> lk(g_table_mu);
+        auto it = g_table.find(fildes);
+        if (it == g_table.end()) {
+            errno = EBADF; set_error("fdpio_read: bad fd"); return -1;
+        }
+        file = it->second.file.get();
+        off  = it->second.pos;
+    }
+
+    uint32_t got = 0;
+    auto st = file->Read(off, static_cast<uint32_t>(nbyte), buf, got);
+    if (!st.IsOK()) {
+        set_error_status(st);
+        errno = errno_from_status(st);
+        return -1;
+    }
+
+    {
+        std::lock_guard<std::mutex> lk(g_table_mu);
+        auto it = g_table.find(fildes);
+        if (it != g_table.end()) it->second.pos += got;
+    }
+    return static_cast<ssize_t>(got);
+}
+
+ssize_t fdpio_write(int fildes, const void *buf, size_t nbyte) {
+    if (fildes < SYNTH_FD_BASE) {
+        ssize_t n = ::write(fildes, buf, nbyte);
+        if (n < 0) set_error_errno();
+        return n;
+    }
+
+    XrdCl::File *file;
+    uint64_t off;
+    {
+        std::lock_guard<std::mutex> lk(g_table_mu);
+        auto it = g_table.find(fildes);
+        if (it == g_table.end()) {
+            errno = EBADF; set_error("fdpio_write: bad fd"); return -1;
+        }
+        file = it->second.file.get();
+        off  = it->second.pos;
+    }
+
+    auto st = file->Write(off, static_cast<uint32_t>(nbyte), buf);
+    if (!st.IsOK()) {
+        set_error_status(st);
+        errno = errno_from_status(st);
+        return -1;
+    }
+
+    {
+        std::lock_guard<std::mutex> lk(g_table_mu);
+        auto it = g_table.find(fildes);
+        if (it != g_table.end()) it->second.pos += nbyte;
+    }
+    return static_cast<ssize_t>(nbyte);
+}
+off_t fdpio_lseek(int fildes, off_t offset, int whence) {
+    if (fildes < SYNTH_FD_BASE) {
+        off_t r = ::lseek(fildes, offset, whence);
+        if (r == (off_t)-1) set_error_errno();
+        return r;
+    }
+
+    std::lock_guard<std::mutex> lk(g_table_mu);
+    auto it = g_table.find(fildes);
+    if (it == g_table.end()) {
+        errno = EBADF; set_error("fdpio_lseek: bad fd"); return -1;
+    }
+    FdEntry &entry = it->second;
+    uint64_t new_pos = entry.pos;
+
+    switch (whence) {
+        case SEEK_SET:
+            if (offset < 0) { errno = EINVAL; return -1; }
+            new_pos = static_cast<uint64_t>(offset);
+            break;
+        case SEEK_CUR: {
+            int64_t signed_pos = static_cast<int64_t>(entry.pos) + offset;
+            if (signed_pos < 0) { errno = EINVAL; return -1; }
+            new_pos = static_cast<uint64_t>(signed_pos);
+            break;
+        }
+        case SEEK_END: {
+            // Issue Stat to learn the size; do it without releasing the
+            // lock since Stat is fast (cached XrdCl response) and lseek
+            // is rarely called from many threads at once.
+            XrdCl::StatInfo *info = nullptr;
+            auto st = entry.file->Stat(false, info);
+            if (!st.IsOK()) {
+                delete info;
+                set_error_status(st);
+                errno = errno_from_status(st);
+                return -1;
+            }
+            int64_t signed_pos =
+                static_cast<int64_t>(info->GetSize()) + offset;
+            delete info;
+            if (signed_pos < 0) { errno = EINVAL; return -1; }
+            new_pos = static_cast<uint64_t>(signed_pos);
+            break;
+        }
+        default:
+            errno = EINVAL;
+            set_error("fdpio_lseek: bad whence");
+            return -1;
+    }
+
+    entry.pos = new_pos;
+    return static_cast<off_t>(new_pos);
+}
+
+int fdpio_stat(const char *path, struct stat *out) {
+    if (!path || !out) { errno = EINVAL; return -1; }
+
+    if (!fdpio_is_url(path)) {
+        int rc = ::stat(path, out);
+        if (rc < 0) set_error_errno();
+        return rc;
+    }
+
+    XrdCl::URL url(std::string{path});
+    if (!url.IsValid()) {
+        errno = EINVAL; set_error("fdpio_stat: invalid URL"); return -1;
+    }
+    XrdCl::FileSystem fs(url);
+    XrdCl::StatInfo *info = nullptr;
+    auto st = fs.Stat(url.GetPath(), info);
+    if (!st.IsOK()) {
+        delete info;
+        set_error_status(st);
+        errno = errno_from_status(st);
+        return -1;
+    }
+
+    std::memset(out, 0, sizeof(*out));
+    out->st_size  = info->GetSize();
+    out->st_mtime = info->GetModTime();
+    mode_t mode   = 0;
+    if (info->TestFlags(XrdCl::StatInfo::IsReadable)) mode |= S_IRUSR;
+    if (info->TestFlags(XrdCl::StatInfo::IsWritable)) mode |= S_IWUSR;
+    mode |= info->TestFlags(XrdCl::StatInfo::IsDir) ? S_IFDIR : S_IFREG;
+    out->st_mode = mode;
+    delete info;
+    return 0;
+}
+
+}  // extern "C"
+
+// Library-load atexit hook: invoke fdpio_cleanup when the library
+// unloads. Safe because we don't depend on any other library's
+// destructor having run first.
+__attribute__((destructor))
+static void fdpio_module_dtor() {
+    fdpio_cleanup();
+}
