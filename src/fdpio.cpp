@@ -50,6 +50,11 @@ struct FdEntry {
     std::unique_ptr<XrdCl::File> file;
     uint64_t pos = 0;   // libfdpio tracks lseek position; XrdCl is
                         // offset-based and has no kernel cursor.
+    uint64_t size = 0;  // Cached at open via XrdCl::File::Stat. Used by
+                        // fdpio_read to short-circuit reads past EOF
+                        // (XrdCl returns a non-OK status for those, but
+                        // POSIX read() must return 0 at EOF, not -1).
+    bool size_known = false;
 };
 
 std::mutex                          g_table_mu;
@@ -222,9 +227,27 @@ int fdpio_open(const char *path, int oflag, ...) {
         return -1;
     }
 
+    // Cache the file size so fdpio_read can detect EOF without making a
+    // call that XrdCl::File would reject. Stat(force=false, ...) uses
+    // the cached open-time response when available, avoiding an extra
+    // network round-trip; if it fails (some servers don't pre-populate
+    // StatInfo), size_known stays false and fdpio_read falls back to
+    // its legacy behaviour.
+    uint64_t size = 0;
+    bool size_known = false;
+    if ((oflag & O_ACCMODE) == O_RDONLY) {
+        XrdCl::StatInfo *info = nullptr;
+        auto sst = file->Stat(false, info);
+        if (sst.IsOK() && info) {
+            size = info->GetSize();
+            size_known = true;
+        }
+        delete info;
+    }
+
     std::lock_guard<std::mutex> lk(g_table_mu);
     int fd = g_next_fd++;
-    g_table.emplace(fd, FdEntry{std::move(file), 0});
+    g_table.emplace(fd, FdEntry{std::move(file), 0, size, size_known});
     return fd;
 }
 int fdpio_close(int fildes) {
@@ -265,7 +288,8 @@ ssize_t fdpio_read(int fildes, void *buf, size_t nbyte) {
     }
 
     XrdCl::File *file;
-    uint64_t off;
+    uint64_t off, size;
+    bool size_known;
     {
         std::lock_guard<std::mutex> lk(g_table_mu);
         auto it = g_table.find(fildes);
@@ -274,6 +298,18 @@ ssize_t fdpio_read(int fildes, void *buf, size_t nbyte) {
         }
         file = it->second.file.get();
         off  = it->second.pos;
+        size = it->second.size;
+        size_known = it->second.size_known;
+    }
+
+    // POSIX read() returns 0 at EOF, never -1. XrdCl::File::Read past
+    // end returns a non-OK status ("Error response: bad address") which
+    // we'd otherwise propagate as -1. Short-circuit reads at/past EOF
+    // and clamp the request length so the last successful read returns
+    // exactly what's left.
+    if (size_known) {
+        if (off >= size) return 0;
+        if (off + nbyte > size) nbyte = static_cast<size_t>(size - off);
     }
 
     uint32_t got = 0;

@@ -44,10 +44,18 @@ std::string make_tmp_path(const char *suffix) {
 }
 
 // URL of the canonical 165920.NBI shot used by the URL round-trip
-// test. Must be reachable from this host.
-constexpr const char *kTestUrl =
-    "xroots://fdp-d3d-origin.nationalresearchplatform.org:8443//"
-    "fdp-d3d/archives/ptdata/ptdata3/16592x/165920.NBI";
+// tests. Federation form (pelican://...) — origin URLs (xroots://)
+// bypass the xrdcl-pelican-fdp plugin and miss bugs specific to that
+// path (e.g. read-past-EOF returning a non-OK status). Override via
+// FDPIO_TEST_URL if your environment routes pelican differently.
+constexpr const char *kDefaultTestUrl =
+    "pelican://osg-htc.org:443/fdp-d3d/archives/ptdata/"
+    "ptdata3/16592x/165920.NBI";
+
+const char *test_url() {
+    const char *override_url = std::getenv("FDPIO_TEST_URL");
+    return (override_url && *override_url) ? override_url : kDefaultTestUrl;
+}
 
 }  // namespace
 
@@ -112,19 +120,18 @@ TEST_CASE("fdpio_is_url honors FDPIO_PROTOCOLS env") {
     unsetenv("FDPIO_PROTOCOLS");
 }
 
-TEST_CASE("URL open/read/close round-trip via xroots://") {
+TEST_CASE("URL open/read/close round-trip") {
     if (!std::getenv("FDPIO_TEST_URL_ENABLE")) {
         MESSAGE("Skipping URL test: set FDPIO_TEST_URL_ENABLE=1 to run");
         return;
     }
     REQUIRE(fdpio_init() == 0);
 
-    int fd = fdpio_open(kTestUrl, O_RDONLY);
-    if (fd < 0) {
-        MESSAGE("URL open failed (network/auth issue?): "
-                << fdpio_error_string());
-        return;
-    }
+    int fd = fdpio_open(test_url(), O_RDONLY);
+    REQUIRE_MESSAGE(fd >= 0,
+        "URL open failed (the URL test was opted in via FDPIO_TEST_URL_ENABLE "
+        "but the URL is unreachable — fix the env or override with FDPIO_TEST_URL): "
+        << fdpio_error_string());
     CHECK(fd >= (1 << 20));   // synthetic fd
 
     char buf[1024];
@@ -149,4 +156,176 @@ TEST_CASE("synthetic fd doesn't leak to native syscalls") {
     int rc = fdpio_close(1 << 20);
     CHECK(rc == -1);
     CHECK(errno == EBADF);
+}
+
+// ---------------------------------------------------------------------------
+// EOF semantics
+//
+// POSIX read() returns 0 at end-of-file and -1 only on error. Local fds get
+// this for free from the kernel. URL-backed fds go through XrdCl::File::Read
+// which returns a non-OK status when the requested offset is past the end
+// of file ("Error response: bad address" from the origin); without a size
+// cache, libfdpio2 would propagate that as -1 and break every read-to-EOF
+// loop. These tests pin the contract.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("local fd: read past EOF returns 0, not -1") {
+    REQUIRE(fdpio_init() == 0);
+    std::string path = make_tmp_path(".dat");
+
+    int wfd = fdpio_open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    REQUIRE(wfd >= 0);
+    const char *msg = "hello-libfdpio";
+    REQUIRE(fdpio_write(wfd, msg, std::strlen(msg)) ==
+            (ssize_t)std::strlen(msg));
+    REQUIRE(fdpio_close(wfd) == 0);
+
+    int fd = fdpio_open(path.c_str(), O_RDONLY);
+    REQUIRE(fd >= 0);
+
+    char buf[64];
+    ssize_t n1 = fdpio_read(fd, buf, sizeof(buf));
+    CHECK(n1 == (ssize_t)std::strlen(msg));
+
+    // Subsequent read must return 0 (EOF), never -1.
+    ssize_t n2 = fdpio_read(fd, buf, sizeof(buf));
+    CHECK(n2 == 0);
+
+    // And again — repeated EOF reads stay at 0.
+    ssize_t n3 = fdpio_read(fd, buf, sizeof(buf));
+    CHECK(n3 == 0);
+
+    CHECK(fdpio_close(fd) == 0);
+    ::unlink(path.c_str());
+}
+
+TEST_CASE("local fd: chunked read to EOF terminates with 0") {
+    REQUIRE(fdpio_init() == 0);
+    std::string path = make_tmp_path(".dat");
+
+    // Write a payload that's not a multiple of the chunk size, so the
+    // last successful read is partial — the case that surprises naive
+    // implementations.
+    int wfd = fdpio_open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    REQUIRE(wfd >= 0);
+    constexpr size_t TOTAL = 9 * 4096 + 137;   // 36k + change
+    std::string payload(TOTAL, '\0');
+    for (size_t i = 0; i < TOTAL; ++i) payload[i] = (char)(i & 0xff);
+    REQUIRE(fdpio_write(wfd, payload.data(), TOTAL) == (ssize_t)TOTAL);
+    REQUIRE(fdpio_close(wfd) == 0);
+
+    int fd = fdpio_open(path.c_str(), O_RDONLY);
+    REQUIRE(fd >= 0);
+
+    constexpr size_t CHUNK = 4096;
+    std::string out;
+    char buf[CHUNK];
+    while (true) {
+        ssize_t n = fdpio_read(fd, buf, CHUNK);
+        REQUIRE(n >= 0);   // never -1, even at end-of-file
+        if (n == 0) break;
+        out.append(buf, (size_t)n);
+    }
+    CHECK(out == payload);
+
+    CHECK(fdpio_close(fd) == 0);
+    ::unlink(path.c_str());
+}
+
+TEST_CASE("URL fd: chunked read to EOF terminates with 0, not -1") {
+    if (!std::getenv("FDPIO_TEST_URL_ENABLE")) {
+        MESSAGE("Skipping URL EOF test: set FDPIO_TEST_URL_ENABLE=1 to run");
+        return;
+    }
+    REQUIRE(fdpio_init() == 0);
+
+    int fd = fdpio_open(test_url(), O_RDONLY);
+    REQUIRE_MESSAGE(fd >= 0,
+        "URL open failed (URL test was opted in but URL is unreachable): "
+        << fdpio_error_string());
+    CHECK(fd >= (1 << 20));   // synthetic fd
+
+    // Probe size via lseek(SEEK_END) and rewind.
+    off_t end = fdpio_lseek(fd, 0, SEEK_END);
+    REQUIRE(end > 0);
+    REQUIRE(fdpio_lseek(fd, 0, SEEK_SET) == 0);
+
+    // Read until exhausted in chunks. Critically: after the last byte
+    // is delivered, the next read MUST return 0, NOT -1. That regression
+    // is what shipped in v2.0.0 and broke ptdata's JSON index loader.
+    constexpr size_t CHUNK = 64 * 1024;
+    std::vector<char> buf(CHUNK);
+    ssize_t total = 0;
+    int reads = 0;
+    while (true) {
+        ssize_t n = fdpio_read(fd, buf.data(), buf.size());
+        REQUIRE_MESSAGE(n >= 0, "fdpio_read returned -1 mid-stream or at EOF: "
+                                << fdpio_error_string());
+        if (n == 0) break;
+        total += n;
+        reads++;
+        REQUIRE(reads < 10000);   // sanity bound — file is ~hundreds of KB
+    }
+    CHECK(total == end);
+
+    // A second read at EOF still returns 0.
+    ssize_t after_eof = fdpio_read(fd, buf.data(), buf.size());
+    CHECK(after_eof == 0);
+
+    CHECK(fdpio_close(fd) == 0);
+}
+
+TEST_CASE("URL fd: oversized read clamps at EOF") {
+    if (!std::getenv("FDPIO_TEST_URL_ENABLE")) {
+        MESSAGE("Skipping URL EOF clamp test: set FDPIO_TEST_URL_ENABLE=1 to run");
+        return;
+    }
+    REQUIRE(fdpio_init() == 0);
+
+    int fd = fdpio_open(test_url(), O_RDONLY);
+    REQUIRE_MESSAGE(fd >= 0,
+        "URL open failed (URL test was opted in but URL is unreachable): "
+        << fdpio_error_string());
+
+    off_t end = fdpio_lseek(fd, 0, SEEK_END);
+    REQUIRE(end > 0);
+
+    // Position 100 bytes from the end, request a buffer much larger
+    // than what's left. fdpio_read must return exactly the remaining
+    // 100 bytes (clamped, not failed).
+    REQUIRE(fdpio_lseek(fd, end - 100, SEEK_SET) == end - 100);
+
+    constexpr size_t BIG = 4 * 1024 * 1024;
+    std::vector<char> buf(BIG);
+    ssize_t n = fdpio_read(fd, buf.data(), buf.size());
+    CHECK(n == 100);
+
+    // Next read returns 0.
+    ssize_t after = fdpio_read(fd, buf.data(), buf.size());
+    CHECK(after == 0);
+
+    CHECK(fdpio_close(fd) == 0);
+}
+
+TEST_CASE("URL fd: read at EOF after seek returns 0") {
+    if (!std::getenv("FDPIO_TEST_URL_ENABLE")) {
+        MESSAGE("Skipping URL seek-to-EOF test: set FDPIO_TEST_URL_ENABLE=1 to run");
+        return;
+    }
+    REQUIRE(fdpio_init() == 0);
+
+    int fd = fdpio_open(test_url(), O_RDONLY);
+    REQUIRE_MESSAGE(fd >= 0,
+        "URL open failed (URL test was opted in but URL is unreachable): "
+        << fdpio_error_string());
+
+    // Seek directly to end, then read. Must return 0.
+    off_t end = fdpio_lseek(fd, 0, SEEK_END);
+    REQUIRE(end > 0);
+
+    char buf[64];
+    ssize_t n = fdpio_read(fd, buf, sizeof(buf));
+    CHECK(n == 0);
+
+    CHECK(fdpio_close(fd) == 0);
 }
