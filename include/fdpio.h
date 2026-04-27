@@ -17,9 +17,16 @@ limitations under the License.
 #ifndef FDPIO_H
 #define FDPIO_H
 
+/*
+ * libfdpio v2.x: POSIX-style I/O over native POSIX (local paths) and
+ * XrdCl::File (URL paths). v2 dropped fdpio_pread/pwrite/fstat,
+ * fdpio_unlink/rename/mkdir/rmdir, and fdpio_opendir/readdir/closedir
+ * because no in-tree caller needed them. They can be re-added if a
+ * future caller does.
+ */
+
 #include <sys/types.h>
 #include <sys/stat.h>
-#include <dirent.h>
 #include <unistd.h>
 #include <fcntl.h>
 
@@ -36,22 +43,10 @@ int         fdpio_open(const char *path, int oflag, ...);
 int         fdpio_close(int fildes);
 ssize_t     fdpio_read(int fildes, void *buf, size_t nbyte);
 ssize_t     fdpio_write(int fildes, const void *buf, size_t nbyte);
-ssize_t     fdpio_pread(int fildes, void *buf, size_t nbyte, off_t offset);
-ssize_t     fdpio_pwrite(int fildes, const void *buf, size_t nbyte, off_t offset);
 off_t       fdpio_lseek(int fildes, off_t offset, int whence);
-int         fdpio_fstat(int fildes, struct stat *buf);
 
 /* Path operations */
 int         fdpio_stat(const char *path, struct stat *buf);
-int         fdpio_unlink(const char *path);
-int         fdpio_rename(const char *oname, const char *nname);
-int         fdpio_mkdir(const char *path, mode_t mode);
-int         fdpio_rmdir(const char *path);
-
-/* Directory operations */
-DIR        *fdpio_opendir(const char *path);
-struct dirent *fdpio_readdir(DIR *dirp);
-int         fdpio_closedir(DIR *dirp);
 
 /* Utility functions */
 int         fdpio_is_url(const char *path);
