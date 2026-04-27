@@ -43,14 +43,23 @@ std::string make_tmp_path(const char *suffix) {
     return p;
 }
 
-// URL of the canonical 165920.NBI shot used by the URL round-trip
-// tests. Federation form (pelican://...) — origin URLs (xroots://)
-// bypass the xrdcl-pelican-fdp plugin and miss bugs specific to that
-// path (e.g. read-past-EOF returning a non-OK status). Override via
-// FDPIO_TEST_URL if your environment routes pelican differently.
+// URL used by the URL round-trip tests. Federation form (pelican://) —
+// origin URLs (xroots://) bypass the xrdcl-pelican-fdp plugin and miss
+// bugs specific to that path (e.g. read-past-EOF returning a non-OK
+// status). Override via FDPIO_TEST_URL if your environment routes
+// pelican differently.
+//
+// The JSON index file is chosen as the default because it's:
+//   * present in every published json_indexes_* snapshot,
+//   * a few hundred KB — large enough to exercise multi-chunk reads
+//     and EOF clamping,
+//   * resolvable through every xrdcl-pelican-fdp version we ship,
+//     including older ones in CI runners (a per-shot ptdata file like
+//     165920.NBI is only registered with newer namespace publishes and
+//     returns 3011/NotFound on stale federation directors).
 constexpr const char *kDefaultTestUrl =
-    "pelican://osg-htc.org:443/fdp-d3d/archives/ptdata/"
-    "ptdata3/16592x/165920.NBI";
+    "pelican://osg-htc.org:443/fdp-d3d/archives/index/json/"
+    "json_indexes_2026-01-13_12:22:11/2000/200000.json";
 
 const char *test_url() {
     const char *override_url = std::getenv("FDPIO_TEST_URL");
