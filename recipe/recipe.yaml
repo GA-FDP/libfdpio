@@ -44,6 +44,7 @@ tests:
         XRD_PLUGINCONFDIR: $PREFIX/etc/xrootd/client.plugins.d
         XRDCP_ALLOW_HTTP: "true"
         XRD_CURLNUMTHREADS: "1"
+        XRD_CURLDISABLEPREFETCH: "1"
         XRD_PELICANUSEAUTHHEADERS: "true"
         XRD_LOGLEVEL: Debug
       content:
