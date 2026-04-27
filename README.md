@@ -1,10 +1,12 @@
-# libfdpio
+# libfdpio2
 
-Fusion Data Platform I/O library for XRootD access.
+Fusion Data Platform I/O library for XRootD access — v2 ABI.
 
 ## Overview
 
-libfdpio provides a C/C++ interface for accessing files through XRootD protocols, specifically designed for the Fusion Data Platform. It supports various XRootD-compatible protocols including Pelican, HTTP, and HTTPS.
+libfdpio2 provides a C/C++ interface for accessing files through XRootD protocols, specifically designed for the Fusion Data Platform. It supports various XRootD-compatible protocols including Pelican, HTTP, and HTTPS.
+
+This is the v2 generation of the library, distributed as the `libfdpio2` conda package (sonamed `libfdpio2.so.0`). It coexists with the older `libfdpio` (v1) package — install both if you have consumers spanning both ABIs. Public functions retain the `fdpio_` prefix; the public header installs to `$PREFIX/include/fdpio2/fdpio.h`, so consumers add `-I$PREFIX/include/fdpio2` and keep `#include <fdpio.h>`.
 
 ## Features
 

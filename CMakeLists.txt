@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.10)
 
-project(fdpio VERSION 2.0.0 LANGUAGES CXX)
+project(fdpio2 VERSION 2.0.0 LANGUAGES CXX)
 
 # Set C++ standard
 set(CMAKE_CXX_STANDARD 14)
@@ -45,39 +45,42 @@ set(FDPIO_SOURCES
     src/fdpio.cpp
 )
 
-# Create shared library
-add_library(fdpio SHARED ${FDPIO_SOURCES})
+# Create shared library — installed as libfdpio2.so to allow side-by-side
+# coexistence with the v1 libfdpio package. SOVERSION restarts at 0 because
+# this is the first release of the fdpio2 ABI.
+add_library(fdpio2 SHARED ${FDPIO_SOURCES})
 
 # Force dynamic linking
-target_link_options(fdpio PRIVATE "LINKER:-Bdynamic")
+target_link_options(fdpio2 PRIVATE "LINKER:-Bdynamic")
 
 # Link against XRootD and dependencies dynamically
-target_link_directories(fdpio PUBLIC ${XROOTD_LIB_DIR})
-target_link_libraries(fdpio XrdCl XrdUtils)
+target_link_directories(fdpio2 PUBLIC ${XROOTD_LIB_DIR})
+target_link_libraries(fdpio2 XrdCl XrdUtils)
 
 # Set library properties
-set_target_properties(fdpio PROPERTIES
+set_target_properties(fdpio2 PROPERTIES
     VERSION ${PROJECT_VERSION}
-    SOVERSION 2
+    SOVERSION 0
     PUBLIC_HEADER include/fdpio.h
 )
 
-# Installation
+# Installation — headers go under include/fdpio2/ so consumers do
+# -I$PREFIX/include/fdpio2 and keep their existing #include <fdpio.h>.
 include(GNUInstallDirs)
 
-install(TARGETS fdpio
+install(TARGETS fdpio2
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    PUBLIC_HEADER DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+    PUBLIC_HEADER DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/fdpio2
 )
 
-# Optional: Create pkg-config file
+# pkg-config file — installed as fdpio2.pc; advertises the include subdir.
 configure_file(
-    ${CMAKE_CURRENT_SOURCE_DIR}/fdpio.pc.in
-    ${CMAKE_CURRENT_BINARY_DIR}/fdpio.pc
+    ${CMAKE_CURRENT_SOURCE_DIR}/fdpio2.pc.in
+    ${CMAKE_CURRENT_BINARY_DIR}/fdpio2.pc
     @ONLY
 )
 
-install(FILES ${CMAKE_CURRENT_BINARY_DIR}/fdpio.pc
+install(FILES ${CMAKE_CURRENT_BINARY_DIR}/fdpio2.pc
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig
 )
 
@@ -107,7 +110,7 @@ if(BUILD_TESTS)
     # Test executable
     add_executable(test_fdpio tests/test_fdpio.cpp)
     target_include_directories(test_fdpio PRIVATE ${DOCTEST_INCLUDE_DIR})
-    target_link_libraries(test_fdpio fdpio)
+    target_link_libraries(test_fdpio fdpio2)
     
     # Add test
     add_test(NAME fdpio_tests COMMAND test_fdpio)
