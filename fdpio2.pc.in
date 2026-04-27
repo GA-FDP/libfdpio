@@ -1,0 +1,10 @@
+prefix=@CMAKE_INSTALL_PREFIX@
+exec_prefix=${prefix}
+libdir=@CMAKE_INSTALL_FULL_LIBDIR@
+includedir=@CMAKE_INSTALL_FULL_INCLUDEDIR@
+
+Name: fdpio2
+Description: Fusion Data Platform I/O library for XRootD access (v2 ABI)
+Version: @PROJECT_VERSION@
+Libs: -L${libdir} -lfdpio2 -lXrdCl -lXrdUtils
+Cflags: -I${includedir}/fdpio2

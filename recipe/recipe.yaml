@@ -4,7 +4,7 @@ context:
   build_hash: ${{ env.get("GIT_DESCRIBE_HASH", default="unknown") }}
 
 package:
-  name: libfdpio
+  name: libfdpio2
   version: ${{ version }}
 
 source:
@@ -33,6 +33,9 @@ requirements:
     - xrootd
     - xrdcl-pelican-fdp
     - certifi
+  run_exports:
+    weak:
+      - libfdpio2 >=2.0.0,<3.0.0a0
 
 tests:
   - script:
@@ -46,6 +49,9 @@ tests:
       content:
         - test -d $PREFIX/etc/xrootd/client.plugins.d
         - test -f $PREFIX/lib/libXrdClPelican-5.so
+        - test -f $PREFIX/include/fdpio2/fdpio.h
+        - test -f $PREFIX/lib/libfdpio2.so
+        - test -f $PREFIX/lib/pkgconfig/fdpio2.pc
         - test_fdpio
 
 about:
