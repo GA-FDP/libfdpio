@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.10)
 
-project(fdpio VERSION 1.0.0 LANGUAGES CXX)
+project(fdpio VERSION 2.0.0 LANGUAGES CXX)
 
 # Set C++ standard
 set(CMAKE_CXX_STANDARD 14)
@@ -14,7 +14,7 @@ set(CMAKE_FIND_LIBRARY_SUFFIXES .so .so.1 .so.0)
 # Find XRootD libraries manually (conda doesn't provide .pc files)
 # Look for the library directory
 find_path(XROOTD_LIB_DIR
-    NAMES libXrdPosix.so
+    NAMES libXrdCl.so
     HINTS ${CMAKE_PREFIX_PATH}/lib $ENV{PREFIX}/lib $ENV{CONDA_PREFIX}/lib
 )
 
@@ -25,7 +25,7 @@ find_path(XROOTD_INCLUDE_DIR
 
 # Check if we found everything
 if(NOT XROOTD_LIB_DIR)
-    message(FATAL_ERROR "XrdPosix library not found. Make sure xrootd is installed.")
+    message(FATAL_ERROR "XrdCl library not found. Make sure xrootd is installed.")
 endif()
 
 if(NOT XROOTD_INCLUDE_DIR)
@@ -53,12 +53,12 @@ target_link_options(fdpio PRIVATE "LINKER:-Bdynamic")
 
 # Link against XRootD and dependencies dynamically
 target_link_directories(fdpio PUBLIC ${XROOTD_LIB_DIR})
-target_link_libraries(fdpio XrdCl XrdPosix ${CMAKE_DL_LIBS} curl ssl crypto)
+target_link_libraries(fdpio XrdCl XrdUtils)
 
 # Set library properties
 set_target_properties(fdpio PROPERTIES
     VERSION ${PROJECT_VERSION}
-    SOVERSION 1
+    SOVERSION 2
     PUBLIC_HEADER include/fdpio.h
 )
 
