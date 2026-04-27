@@ -227,9 +227,104 @@ int fdpio_open(const char *path, int oflag, ...) {
     g_table.emplace(fd, FdEntry{std::move(file), 0});
     return fd;
 }
-int fdpio_close(int)                          { errno = ENOSYS; return -1; }
-ssize_t fdpio_read(int, void *, size_t)       { errno = ENOSYS; return -1; }
-ssize_t fdpio_write(int, const void *, size_t){ errno = ENOSYS; return -1; }
+int fdpio_close(int fildes) {
+    if (fildes < SYNTH_FD_BASE) {
+        int rc = ::close(fildes);
+        if (rc < 0) set_error_errno();
+        return rc;
+    }
+
+    // Move the unique_ptr out of the table while holding the lock,
+    // then call Close() / let the destructor run *outside* the lock.
+    // XrdCl::File destruction can block (cancel pending callbacks);
+    // holding g_table_mu during that would deadlock other callers.
+    std::unique_ptr<XrdCl::File> file;
+    {
+        std::lock_guard<std::mutex> lk(g_table_mu);
+        auto it = g_table.find(fildes);
+        if (it == g_table.end()) {
+            errno = EBADF; set_error("fdpio_close: bad fd"); return -1;
+        }
+        file = std::move(it->second.file);
+        g_table.erase(it);
+    }
+    auto st = file->Close();
+    if (!st.IsOK()) {
+        set_error_status(st);
+        errno = errno_from_status(st);
+        return -1;
+    }
+    return 0;
+}
+
+ssize_t fdpio_read(int fildes, void *buf, size_t nbyte) {
+    if (fildes < SYNTH_FD_BASE) {
+        ssize_t n = ::read(fildes, buf, nbyte);
+        if (n < 0) set_error_errno();
+        return n;
+    }
+
+    XrdCl::File *file;
+    uint64_t off;
+    {
+        std::lock_guard<std::mutex> lk(g_table_mu);
+        auto it = g_table.find(fildes);
+        if (it == g_table.end()) {
+            errno = EBADF; set_error("fdpio_read: bad fd"); return -1;
+        }
+        file = it->second.file.get();
+        off  = it->second.pos;
+    }
+
+    uint32_t got = 0;
+    auto st = file->Read(off, static_cast<uint32_t>(nbyte), buf, got);
+    if (!st.IsOK()) {
+        set_error_status(st);
+        errno = errno_from_status(st);
+        return -1;
+    }
+
+    {
+        std::lock_guard<std::mutex> lk(g_table_mu);
+        auto it = g_table.find(fildes);
+        if (it != g_table.end()) it->second.pos += got;
+    }
+    return static_cast<ssize_t>(got);
+}
+
+ssize_t fdpio_write(int fildes, const void *buf, size_t nbyte) {
+    if (fildes < SYNTH_FD_BASE) {
+        ssize_t n = ::write(fildes, buf, nbyte);
+        if (n < 0) set_error_errno();
+        return n;
+    }
+
+    XrdCl::File *file;
+    uint64_t off;
+    {
+        std::lock_guard<std::mutex> lk(g_table_mu);
+        auto it = g_table.find(fildes);
+        if (it == g_table.end()) {
+            errno = EBADF; set_error("fdpio_write: bad fd"); return -1;
+        }
+        file = it->second.file.get();
+        off  = it->second.pos;
+    }
+
+    auto st = file->Write(off, static_cast<uint32_t>(nbyte), buf);
+    if (!st.IsOK()) {
+        set_error_status(st);
+        errno = errno_from_status(st);
+        return -1;
+    }
+
+    {
+        std::lock_guard<std::mutex> lk(g_table_mu);
+        auto it = g_table.find(fildes);
+        if (it != g_table.end()) it->second.pos += nbyte;
+    }
+    return static_cast<ssize_t>(nbyte);
+}
 off_t fdpio_lseek(int, off_t, int)            { errno = ENOSYS; return -1; }
 int fdpio_stat(const char *, struct stat *)   { errno = ENOSYS; return -1; }
 
