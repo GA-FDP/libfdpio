@@ -17,6 +17,8 @@ you may not use this file except in compliance with the License.
 #include <fcntl.h>
 #include <string>
 #include <sys/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
 
 // This exe deliberately never calls fdpio_init() before the first URL op.
 // Pre-fix (libfdpio2 2.0.1) this fails: fdpio_open falls through the POSIX
@@ -32,9 +34,14 @@ const char *test_url() {
 const char *skip_reason() {
     if (!std::getenv("XRD_PLUGINCONFDIR"))
         return "XRD_PLUGINCONFDIR not set (xrdcl-pelican-fdp plugin won't load)";
-    if (!std::getenv("BEARER_TOKEN") && !std::getenv("BEARER_TOKEN_FILE"))
-        return "no BEARER_TOKEN / BEARER_TOKEN_FILE set; osg-htc origin will deny";
-    return nullptr;
+    const char *tok = std::getenv("BEARER_TOKEN");
+    if (tok && *tok) return nullptr;
+    if (std::getenv("BEARER_TOKEN_FILE")) return nullptr;
+    if (const char *home = std::getenv("HOME")) {
+        std::string token_path = std::string(home) + "/.fdp/token";
+        if (::access(token_path.c_str(), R_OK) == 0) return nullptr;
+    }
+    return "no BEARER_TOKEN / BEARER_TOKEN_FILE / ~/.fdp/token; osg-htc origin will deny";
 }
 }  // namespace
 
