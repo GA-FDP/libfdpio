@@ -112,6 +112,26 @@ int main() {
 }
 ```
 
+## Known limitations
+
+### Not fork-safe
+
+libfdpio2 inherits XrdCl's fork-unsafety. Once a process has opened a URL
+(directly via `fdpio_open` or transitively via libfdpio2's auto-init), it
+must not `fork()` and then attempt URL operations in the child. Concretely:
+
+- libfdpio2's own `pthread_atfork` child handler resets the lazy-init flag
+  so the child re-runs `fdpio_init()` cleanly. That part is correct.
+- But XrdCl's plugin manager and the xrdcl-pelican-fdp / libcurl backends
+  carry per-process state (resolver thread, connection cache, plugin
+  singletons) that is not fork-safe. The child will hang inside
+  `XrdCl::File::Open` when the inherited state interacts with newly-spawned
+  worker threads.
+
+Use `posix_spawn(3)` or `fork()`-then-`execve(3)` instead of bare `fork()`
+for child workers that need URL access. Local-path operations
+(`fdpio_open` on a regular file) are unaffected.
+
 ## License
 
 Apache 2.0 License (see LICENSE file)
