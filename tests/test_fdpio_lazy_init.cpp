@@ -68,3 +68,24 @@ TEST_CASE("fdpio_stat(URL) succeeds without prior fdpio_init()") {
     REQUIRE(rc == 0);
     CHECK(st.st_size > 0);
 }
+
+TEST_CASE("explicit fdpio_init() after auto-init is a no-op (idempotent)") {
+    if (const char *why = skip_reason()) {
+        MESSAGE("Skipping: " << why);
+        return;
+    }
+    // Drive auto-init via fdpio_open.
+    int fd = fdpio_open(test_url(), O_RDONLY);
+    REQUIRE(fd >= 0);
+    fdpio_close(fd);
+
+    // Multiple explicit re-inits must succeed without changing behavior.
+    REQUIRE(fdpio_init() == 0);
+    REQUIRE(fdpio_init() == 0);
+    REQUIRE(fdpio_init() == 0);
+
+    // A subsequent open still works.
+    fd = fdpio_open(test_url(), O_RDONLY);
+    REQUIRE(fd >= 0);
+    fdpio_close(fd);
+}
