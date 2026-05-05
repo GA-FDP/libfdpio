@@ -130,5 +130,5 @@ if(BUILD_TESTS)
     target_link_libraries(test_fdpio_lazy_init fdpio2)
     add_test(NAME fdpio_lazy_init_tests COMMAND test_fdpio_lazy_init)
     set_tests_properties(fdpio_lazy_init_tests PROPERTIES
-        ENVIRONMENT "XRDCP_ALLOW_HTTP=true;XRD_PELICANUSEAUTHHEADERS=true")
+        ENVIRONMENT "XRDCP_ALLOW_HTTP=true;XRD_PELICANUSEAUTHHEADERS=true;FDPIO_PROTOCOLS=pelican,http,https")
 endif()
