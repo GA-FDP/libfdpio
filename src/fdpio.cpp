@@ -34,6 +34,7 @@ limitations under the License.
 #include <fstream>
 #include <memory>
 #include <mutex>
+#include <pthread.h>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -106,6 +107,38 @@ void parse_protocols(const char *raw) {
         if (!proto.empty()) g_protocols.push_back(std::move(proto));
         start = end + 1;
     }
+}
+
+// Forward declaration so ensure_initialized() can call fdpio_init(),
+// which is defined in the extern "C" block below.
+extern "C" int fdpio_init(void);
+
+// Lazy-init bookkeeping. Each public entry point that needs XrdCl state
+// (fdpio_open, fdpio_stat) calls ensure_initialized() before doing work.
+// Pre-2.0.2 callers had to call fdpio_init() themselves; that contract is
+// preserved (still callable, still idempotent), but no longer required.
+std::atomic_bool g_initialized{false};
+std::mutex      g_init_mutex;
+std::once_flag  g_atfork_once;
+
+void atfork_child() {
+    // After fork, the parent's XrdCl plugin manager + sockets are unusable
+    // in the child. Reset so the next URL op re-initializes locally.
+    g_initialized.store(false, std::memory_order_relaxed);
+}
+
+int ensure_initialized() {
+    if (g_initialized.load(std::memory_order_acquire)) return 0;
+    std::lock_guard<std::mutex> lock(g_init_mutex);
+    if (g_initialized.load(std::memory_order_relaxed)) return 0;
+
+    if (fdpio_init() != 0) return -1;        // fdpio_init() populates g_errbuf
+
+    std::call_once(g_atfork_once, [] {
+        pthread_atfork(nullptr, nullptr, atfork_child);
+    });
+    g_initialized.store(true, std::memory_order_release);
+    return 0;
 }
 
 }  // namespace
@@ -181,6 +214,10 @@ const char *fdpio_error_string(void) {
 // while remaining tasks are landed.
 
 int fdpio_open(const char *path, int oflag, ...) {
+    if (ensure_initialized() != 0) {
+        errno = EIO;
+        return -1;                  // fdpio_error_string() already populated
+    }
     if (!path) { errno = EINVAL; set_error("null path"); return -1; }
 
     // Local path: native POSIX. Returns a real kernel fd (< SYNTH_FD_BASE).
@@ -417,6 +454,10 @@ off_t fdpio_lseek(int fildes, off_t offset, int whence) {
 }
 
 int fdpio_stat(const char *path, struct stat *out) {
+    if (ensure_initialized() != 0) {
+        errno = EIO;
+        return -1;
+    }
     if (!path || !out) { errno = EINVAL; return -1; }
 
     if (!fdpio_is_url(path)) {
