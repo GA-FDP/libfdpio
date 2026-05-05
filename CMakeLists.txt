@@ -114,14 +114,21 @@ if(BUILD_TESTS)
     
     # Add test
     add_test(NAME fdpio_tests COMMAND test_fdpio)
-    
+
     # Set test environment variables
     set_tests_properties(fdpio_tests PROPERTIES
         ENVIRONMENT "XRDCP_ALLOW_HTTP=true;FDPIO_PROTOCOLS=pelican,http,https"
     )
-    
+
     # Install test executable
     install(TARGETS test_fdpio
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
     )
+
+    add_executable(test_fdpio_lazy_init tests/test_fdpio_lazy_init.cpp)
+    target_include_directories(test_fdpio_lazy_init PRIVATE ${DOCTEST_INCLUDE_DIR})
+    target_link_libraries(test_fdpio_lazy_init fdpio2)
+    add_test(NAME fdpio_lazy_init_tests COMMAND test_fdpio_lazy_init)
+    set_tests_properties(fdpio_lazy_init_tests PROPERTIES
+        ENVIRONMENT "XRDCP_ALLOW_HTTP=true;XRD_PELICANUSEAUTHHEADERS=true")
 endif()
