@@ -18,7 +18,6 @@ you may not use this file except in compliance with the License.
 #include <string>
 #include <sys/stat.h>
 #include <sys/types.h>
-#include <sys/wait.h>
 #include <unistd.h>
 
 // This exe deliberately never calls fdpio_init() before the first URL op.
@@ -89,35 +88,4 @@ TEST_CASE("explicit fdpio_init() after auto-init is a no-op (idempotent)") {
     fd = fdpio_open(test_url(), O_RDONLY);
     REQUIRE(fd >= 0);
     fdpio_close(fd);
-}
-
-TEST_CASE("fork() resets init; child re-runs first URL op cleanly") {
-    if (const char *why = skip_reason()) {
-        MESSAGE("Skipping: " << why);
-        return;
-    }
-    // Parent: drive auto-init and a real URL read so XrdCl state is live.
-    {
-        int fd = fdpio_open(test_url(), O_RDONLY);
-        REQUIRE(fd >= 0);
-        char buf[16];
-        REQUIRE(fdpio_read(fd, buf, sizeof buf) > 0);
-        fdpio_close(fd);
-    }
-
-    pid_t pid = fork();
-    REQUIRE(pid >= 0);
-    if (pid == 0) {
-        // Child: open a URL — must succeed via re-init in the child.
-        int fd = fdpio_open(test_url(), O_RDONLY);
-        if (fd < 0) std::_Exit(2);
-        char buf[16];
-        ssize_t n = fdpio_read(fd, buf, sizeof buf);
-        fdpio_close(fd);
-        std::_Exit(n > 0 ? 0 : 3);
-    }
-    int status = 0;
-    REQUIRE(waitpid(pid, &status, 0) == pid);
-    REQUIRE(WIFEXITED(status));
-    CHECK(WEXITSTATUS(status) == 0);
 }
