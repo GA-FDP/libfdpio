@@ -492,6 +492,15 @@ int fdpio_stat(const char *path, struct stat *out) {
     return 0;
 }
 
+int fdpio_listdir(const char *path,
+                  int (*cb)(const char *name, int is_dir, void *ctx),
+                  void *ctx) {
+    (void)path; (void)cb; (void)ctx;
+    errno = ENOSYS;
+    set_error("fdpio_listdir: not implemented");
+    return -1;
+}
+
 }  // extern "C"
 
 // Library-load atexit hook: invoke fdpio_cleanup when the library
