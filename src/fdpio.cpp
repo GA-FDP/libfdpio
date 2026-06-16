@@ -505,8 +505,12 @@ int fdpio_listdir(const char *path,
         DIR *d = ::opendir(path);
         if (!d) { set_error_errno(); return -1; }
         int rc = 0;
-        struct dirent *ent;
-        while ((ent = ::readdir(d)) != nullptr) {
+        for (;;) {
+            errno = 0;
+            struct dirent *ent = ::readdir(d);
+            if (ent == nullptr) {
+                break;   // end-of-dir (errno==0) or error (errno!=0); checked below
+            }
             if (std::strcmp(ent->d_name, ".") == 0 ||
                 std::strcmp(ent->d_name, "..") == 0) {
                 continue;
@@ -525,6 +529,14 @@ int fdpio_listdir(const char *path,
             }
             rc = cb(ent->d_name, is_dir, ctx);
             if (rc != 0) break;   // caller requested early stop
+        }
+        // Distinguish a readdir error from normal end-of-iteration. Only treat
+        // it as an error if the callback did NOT request an early stop (rc==0),
+        // since an early-stop break can leave errno set by the in-loop ::stat.
+        if (rc == 0 && errno != 0) {
+            set_error_errno();
+            ::closedir(d);
+            return -1;
         }
         ::closedir(d);
         return rc;

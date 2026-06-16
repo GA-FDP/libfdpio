@@ -56,6 +56,8 @@ int         fdpio_stat(const char *path, struct stat *buf);
  * Returning nonzero from `cb` stops the iteration early and that value
  * becomes the return value. Returns 0 on success, -1 on error (see
  * fdpio_error_string()).
+ * Callers that need to distinguish an early stop from an error should
+ * avoid using -1 as their cb stop value (use any other nonzero value).
  *
  * Design note: the callback form is deliberate. Every other function in
  * this API returns by value/out-param or hands back a *borrowed* pointer

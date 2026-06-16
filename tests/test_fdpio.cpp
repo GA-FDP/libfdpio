@@ -427,3 +427,27 @@ TEST_CASE("fdpio_listdir reports error for a missing local directory") {
         [](const char*, int, void*) -> int { return 0; }, nullptr);
     CHECK(rc == -1);
 }
+
+TEST_CASE("fdpio_listdir stops early and propagates the cb return value") {
+    char tmpl[] = "/tmp/libfdpio_listdir_stop_XXXXXX";
+    REQUIRE(::mkdtemp(tmpl) != nullptr);
+    std::string root = tmpl;
+    REQUIRE(::mkdir((root + "/a").c_str(), 0755) == 0);
+    REQUIRE(::mkdir((root + "/b").c_str(), 0755) == 0);
+    REQUIRE(::mkdir((root + "/c").c_str(), 0755) == 0);
+
+    int call_count = 0;
+    int rc = fdpio_listdir(root.c_str(),
+        [](const char*, int, void* ctx) -> int {
+            ++*static_cast<int*>(ctx);
+            return 42;   // stop on the very first entry
+        }, &call_count);
+
+    CHECK(rc == 42);          // cb's value propagates
+    CHECK(call_count == 1);   // iteration stopped after the first entry
+
+    ::rmdir((root + "/a").c_str());
+    ::rmdir((root + "/b").c_str());
+    ::rmdir((root + "/c").c_str());
+    ::rmdir(root.c_str());
+}
