@@ -31,6 +31,7 @@ limitations under the License.
 #include <cstdarg>
 #include <cstdlib>
 #include <cstring>
+#include <dirent.h>
 #include <fstream>
 #include <memory>
 #include <mutex>
@@ -495,10 +496,64 @@ int fdpio_stat(const char *path, struct stat *out) {
 int fdpio_listdir(const char *path,
                   int (*cb)(const char *name, int is_dir, void *ctx),
                   void *ctx) {
-    (void)path; (void)cb; (void)ctx;
-    errno = ENOSYS;
-    set_error("fdpio_listdir: not implemented");
-    return -1;
+    if (ensure_initialized() != 0) { errno = EIO; return -1; }
+    if (!path || !cb) {
+        errno = EINVAL; set_error("fdpio_listdir: null arg"); return -1;
+    }
+
+    if (!fdpio_is_url(path)) {
+        DIR *d = ::opendir(path);
+        if (!d) { set_error_errno(); return -1; }
+        int rc = 0;
+        struct dirent *ent;
+        while ((ent = ::readdir(d)) != nullptr) {
+            if (std::strcmp(ent->d_name, ".") == 0 ||
+                std::strcmp(ent->d_name, "..") == 0) {
+                continue;
+            }
+            int is_dir;
+            if (ent->d_type == DT_DIR) {
+                is_dir = 1;
+            } else if (ent->d_type == DT_UNKNOWN) {
+                // Some filesystems leave d_type unset; stat to decide.
+                std::string full = std::string(path) + "/" + ent->d_name;
+                struct ::stat st;
+                is_dir = (::stat(full.c_str(), &st) == 0 &&
+                          S_ISDIR(st.st_mode)) ? 1 : 0;
+            } else {
+                is_dir = 0;
+            }
+            rc = cb(ent->d_name, is_dir, ctx);
+            if (rc != 0) break;   // caller requested early stop
+        }
+        ::closedir(d);
+        return rc;
+    }
+
+    XrdCl::URL url(std::string{path});
+    if (!url.IsValid()) {
+        errno = EINVAL; set_error("fdpio_listdir: invalid URL"); return -1;
+    }
+    XrdCl::FileSystem fs(url);
+    XrdCl::DirectoryList *list = nullptr;
+    auto st = fs.DirList(url.GetPath(), XrdCl::DirListFlags::Stat, list);
+    if (!st.IsOK()) {
+        delete list;
+        set_error_status(st);
+        errno = errno_from_status(st);
+        return -1;
+    }
+    int rc = 0;
+    for (auto it = list->Begin(); it != list->End(); ++it) {
+        XrdCl::DirectoryList::ListEntry *entry = *it;
+        const std::string &name = entry->GetName();
+        XrdCl::StatInfo *info = entry->GetStatInfo();
+        int is_dir = (info && info->TestFlags(XrdCl::StatInfo::IsDir)) ? 1 : 0;
+        rc = cb(name.c_str(), is_dir, ctx);
+        if (rc != 0) break;
+    }
+    delete list;
+    return rc;
 }
 
 }  // extern "C"
