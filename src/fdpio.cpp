@@ -59,8 +59,23 @@ struct FdEntry {
     bool size_known = false;
 };
 
-std::mutex                          g_table_mu;
-std::unordered_map<int, FdEntry>    g_table;
+// Immortal (intentionally-leaked) globals. These are bound to heap objects
+// that are NEVER destroyed, instead of being plain namespace-scope objects.
+//
+// Why: fdpio_cleanup() runs both from Python's atexit (via the ptdata _core
+// module, while the interpreter is alive) AND from this library's own
+// __attribute__((destructor)) (fdpio_module_dtor, below) during _dl_fini.
+// _dl_fini runs *after* __run_exit_handlers has already destroyed ordinary
+// static-duration objects. If g_table / g_table_mu were ordinary globals,
+// the destructor-time fdpio_cleanup() would touch already-freed memory ->
+// heap-use-after-free, which surfaces in production as the GH#6 crash
+// ("corrupted size vs. prev_size" / SIGSEGV at interpreter shutdown).
+//
+// Leaking these singletons removes the static-destruction-order dependency
+// entirely: the objects outlive every destructor, so a late fdpio_cleanup()
+// is always safe. The memory is reclaimed by the OS at process exit.
+std::mutex&                         g_table_mu = *new std::mutex();
+std::unordered_map<int, FdEntry>&   g_table    = *new std::unordered_map<int, FdEntry>();
 int                                 g_next_fd = SYNTH_FD_BASE;
 
 thread_local char                   g_errbuf[256];
