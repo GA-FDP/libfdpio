@@ -23,10 +23,13 @@ limitations under the License.
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <dirent.h>
 #include <fcntl.h>
+#include <fstream>
 #include <string>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <vector>
 
 namespace {
 
@@ -378,4 +381,73 @@ TEST_CASE("URL fd: read at EOF after seek returns 0") {
     CHECK(n == 0);
 
     CHECK(fdpio_close(fd) == 0);
+}
+
+TEST_CASE("fdpio_listdir lists entries of a local directory") {
+    // Build a temp dir with two subdirs and one file.
+    char tmpl[] = "/tmp/libfdpio_listdir_XXXXXX";
+    REQUIRE(::mkdtemp(tmpl) != nullptr);
+    std::string root = tmpl;
+    REQUIRE(::mkdir((root + "/json_indexes_2026-01-13").c_str(), 0755) == 0);
+    REQUIRE(::mkdir((root + "/json_indexes_2026-02-20").c_str(), 0755) == 0);
+    { std::ofstream(root + "/readme.txt") << "hi"; }
+
+    struct Acc { std::vector<std::string> dirs; std::vector<std::string> all; };
+    Acc acc;
+    int rc = fdpio_listdir(root.c_str(),
+        [](const char* name, int is_dir, void* ctx) -> int {
+            auto* a = static_cast<Acc*>(ctx);
+            a->all.emplace_back(name);
+            if (is_dir) a->dirs.emplace_back(name);
+            return 0;
+        }, &acc);
+
+    CHECK(rc == 0);
+    // Two directories, regardless of order; "." and ".." excluded.
+    CHECK(acc.dirs.size() == 2);
+    bool has_jan = false, has_feb = false, has_file = false;
+    for (auto& d : acc.dirs) {
+        if (d == "json_indexes_2026-01-13") has_jan = true;
+        if (d == "json_indexes_2026-02-20") has_feb = true;
+    }
+    for (auto& n : acc.all) if (n == "readme.txt") has_file = true;
+    CHECK(has_jan);
+    CHECK(has_feb);
+    CHECK(has_file);          // file is visited, just not flagged is_dir
+
+    // cleanup
+    ::remove((root + "/json_indexes_2026-01-13").c_str());
+    ::remove((root + "/json_indexes_2026-02-20").c_str());
+    ::remove((root + "/readme.txt").c_str());
+    ::rmdir(root.c_str());
+}
+
+TEST_CASE("fdpio_listdir reports error for a missing local directory") {
+    int rc = fdpio_listdir("/no/such/dir/anywhere",
+        [](const char*, int, void*) -> int { return 0; }, nullptr);
+    CHECK(rc == -1);
+}
+
+TEST_CASE("fdpio_listdir stops early and propagates the cb return value") {
+    char tmpl[] = "/tmp/libfdpio_listdir_stop_XXXXXX";
+    REQUIRE(::mkdtemp(tmpl) != nullptr);
+    std::string root = tmpl;
+    REQUIRE(::mkdir((root + "/a").c_str(), 0755) == 0);
+    REQUIRE(::mkdir((root + "/b").c_str(), 0755) == 0);
+    REQUIRE(::mkdir((root + "/c").c_str(), 0755) == 0);
+
+    int call_count = 0;
+    int rc = fdpio_listdir(root.c_str(),
+        [](const char*, int, void* ctx) -> int {
+            ++*static_cast<int*>(ctx);
+            return 42;   // stop on the very first entry
+        }, &call_count);
+
+    CHECK(rc == 42);          // cb's value propagates
+    CHECK(call_count == 1);   // iteration stopped after the first entry
+
+    ::rmdir((root + "/a").c_str());
+    ::rmdir((root + "/b").c_str());
+    ::rmdir((root + "/c").c_str());
+    ::rmdir(root.c_str());
 }

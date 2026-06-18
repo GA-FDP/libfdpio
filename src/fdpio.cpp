@@ -31,6 +31,7 @@ limitations under the License.
 #include <cstdarg>
 #include <cstdlib>
 #include <cstring>
+#include <dirent.h>
 #include <fstream>
 #include <memory>
 #include <mutex>
@@ -58,8 +59,23 @@ struct FdEntry {
     bool size_known = false;
 };
 
-std::mutex                          g_table_mu;
-std::unordered_map<int, FdEntry>    g_table;
+// Immortal (intentionally-leaked) globals. These are bound to heap objects
+// that are NEVER destroyed, instead of being plain namespace-scope objects.
+//
+// Why: fdpio_cleanup() runs both from Python's atexit (via the ptdata _core
+// module, while the interpreter is alive) AND from this library's own
+// __attribute__((destructor)) (fdpio_module_dtor, below) during _dl_fini.
+// _dl_fini runs *after* __run_exit_handlers has already destroyed ordinary
+// static-duration objects. If g_table / g_table_mu were ordinary globals,
+// the destructor-time fdpio_cleanup() would touch already-freed memory ->
+// heap-use-after-free, which surfaces in production as the GH#6 crash
+// ("corrupted size vs. prev_size" / SIGSEGV at interpreter shutdown).
+//
+// Leaking these singletons removes the static-destruction-order dependency
+// entirely: the objects outlive every destructor, so a late fdpio_cleanup()
+// is always safe. The memory is reclaimed by the OS at process exit.
+std::mutex&                         g_table_mu = *new std::mutex();
+std::unordered_map<int, FdEntry>&   g_table    = *new std::unordered_map<int, FdEntry>();
 int                                 g_next_fd = SYNTH_FD_BASE;
 
 thread_local char                   g_errbuf[256];
@@ -490,6 +506,81 @@ int fdpio_stat(const char *path, struct stat *out) {
     out->st_mode = mode;
     delete info;
     return 0;
+}
+
+int fdpio_listdir(const char *path,
+                  int (*cb)(const char *name, int is_dir, void *ctx),
+                  void *ctx) {
+    if (ensure_initialized() != 0) { errno = EIO; return -1; }
+    if (!path || !cb) {
+        errno = EINVAL; set_error("fdpio_listdir: null arg"); return -1;
+    }
+
+    if (!fdpio_is_url(path)) {
+        DIR *d = ::opendir(path);
+        if (!d) { set_error_errno(); return -1; }
+        int rc = 0;
+        for (;;) {
+            errno = 0;
+            struct dirent *ent = ::readdir(d);
+            if (ent == nullptr) {
+                break;   // end-of-dir (errno==0) or error (errno!=0); checked below
+            }
+            if (std::strcmp(ent->d_name, ".") == 0 ||
+                std::strcmp(ent->d_name, "..") == 0) {
+                continue;
+            }
+            int is_dir;
+            if (ent->d_type == DT_DIR) {
+                is_dir = 1;
+            } else if (ent->d_type == DT_UNKNOWN) {
+                // Some filesystems leave d_type unset; stat to decide.
+                std::string full = std::string(path) + "/" + ent->d_name;
+                struct ::stat st;
+                is_dir = (::stat(full.c_str(), &st) == 0 &&
+                          S_ISDIR(st.st_mode)) ? 1 : 0;
+            } else {
+                is_dir = 0;
+            }
+            rc = cb(ent->d_name, is_dir, ctx);
+            if (rc != 0) break;   // caller requested early stop
+        }
+        // Distinguish a readdir error from normal end-of-iteration. Only treat
+        // it as an error if the callback did NOT request an early stop (rc==0),
+        // since an early-stop break can leave errno set by the in-loop ::stat.
+        if (rc == 0 && errno != 0) {
+            set_error_errno();
+            ::closedir(d);
+            return -1;
+        }
+        ::closedir(d);
+        return rc;
+    }
+
+    XrdCl::URL url(std::string{path});
+    if (!url.IsValid()) {
+        errno = EINVAL; set_error("fdpio_listdir: invalid URL"); return -1;
+    }
+    XrdCl::FileSystem fs(url);
+    XrdCl::DirectoryList *list = nullptr;
+    auto st = fs.DirList(url.GetPath(), XrdCl::DirListFlags::Stat, list);
+    if (!st.IsOK()) {
+        delete list;
+        set_error_status(st);
+        errno = errno_from_status(st);
+        return -1;
+    }
+    int rc = 0;
+    for (auto it = list->Begin(); it != list->End(); ++it) {
+        XrdCl::DirectoryList::ListEntry *entry = *it;
+        const std::string &name = entry->GetName();
+        XrdCl::StatInfo *info = entry->GetStatInfo();
+        int is_dir = (info && info->TestFlags(XrdCl::StatInfo::IsDir)) ? 1 : 0;
+        rc = cb(name.c_str(), is_dir, ctx);
+        if (rc != 0) break;
+    }
+    delete list;
+    return rc;
 }
 
 }  // extern "C"

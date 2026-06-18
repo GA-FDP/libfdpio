@@ -28,9 +28,16 @@ requirements:
     - make
     - pkg-config
   host:
-    - xrootd
+    # Pin to XRootD 5.x: the xrdcl-pelican-fdp client plugin is a v5
+    # (libXrdCl.so.3) plugin. Building against xrootd 6 (libXrdCl.so.6)
+    # leaves FileSystem ops (Stat/DirList) unserviced by the v5 plugin —
+    # they fail with "Operation not supported" even though file reads work.
+    # TODO: drop this pin and move the whole stack to XRootD 6 once a v6
+    # xrdcl-pelican-fdp plugin is available; the <6 pin is a stopgap to
+    # match the currently-deployed v5 plugin.
+    - xrootd <6
   run:
-    - xrootd
+    - xrootd <6
     - xrdcl-pelican-fdp
     - certifi
   run_exports:
