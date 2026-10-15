@@ -1,10 +1,18 @@
 name: Conda Package CI/CD
 
+# Two events, one version, as for the other fdp-core members. See
+# fdp-core/docs/specs/2026-09-15-staging-and-promotion.md section 3.
+#
+#   staging-X.Y.Z  -> build both platforms, upload to ga-fdp/label/staging
+#   release-X.Y.Z  -> relabel those exact bytes to main. NO rebuild.
+#
+# The release tag is cut by the fdp-core bless, not by hand.
 on:
   push:
     branches:
       - main
     tags:
+      - 'staging-*'
       - 'release-*'
   pull_request:
     branches:
@@ -12,6 +20,8 @@ on:
 
 jobs:
   build_and_test:
+    # Not on a release tag: that promotes an artifact which already exists.
+    if: "!startsWith(github.ref, 'refs/tags/release-')"
     # osx-arm64 builds natively on macOS: a cross-build from Linux would need
     # Apple's SDK, whose license limits it to Apple hardware.
     strategy:
@@ -23,7 +33,7 @@ jobs:
             extra_channel: ""
           - subdir: osx-arm64
             os: macos-14
-            # No osx-arm64 xrdcl-pelican-fdp is blessed yet; 0.3.1 is staged.
+            # No osx-arm64 xrdcl-pelican-fdp is blessed yet; it is staged.
             # Linux keeps testing against what users install.
             extra_channel: ga-fdp/label/staging
     runs-on: ${{ matrix.os }}
@@ -50,11 +60,66 @@ jobs:
           pixi global install rattler-build
           ./build_package.sh ${HOME}/outdir
 
-      - name: Upload to Anaconda
-        if: startsWith(github.ref, 'refs/tags/release-')
+      - name: The built version must match the tag
+        # build_package.sh takes the version from `git describe`, which picks
+        # one tag when a commit carries several.
+        if: startsWith(github.ref, 'refs/tags/staging-')
         run: |
-          rattler-build upload anaconda \
-            --owner ga-fdp \
-            --api-key ${{ secrets.ANACONDA_API_TOKEN }} \
-            --force \
-            ${HOME}/outdir/${{ matrix.subdir }}/*.conda
+          VERSION="${GITHUB_REF#refs/tags/staging-}"
+          shopt -s nullglob
+          built=(${HOME}/outdir/${{ matrix.subdir }}/libfdpio2-${VERSION}-*.conda)
+          if [ ${#built[@]} -eq 0 ]; then
+            echo "::error::tag says ${VERSION}, but nothing of that version was built."
+            ls -la ${HOME}/outdir/*/ || true
+            exit 1
+          fi
+
+      - name: Upload to staging
+        if: startsWith(github.ref, 'refs/tags/staging-')
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/staging-}"
+          for f in ${HOME}/outdir/${{ matrix.subdir }}/libfdpio2-${VERSION}-*.conda; do
+            rattler-build upload anaconda \
+              --owner ga-fdp \
+              --channel staging \
+              --api-key ${{ secrets.ANACONDA_API_TOKEN }} \
+              --force \
+              "$f"
+          done
+
+      - name: Retire the superseded staging candidate
+        # AFTER the upload. DELETES NOTHING: older staged versions are
+        # downloaded, checksum-verified and moved to the `attic` label.
+        # Idempotent, so running it on both legs is harmless.
+        if: startsWith(github.ref, 'refs/tags/staging-')
+        env:
+          ANACONDA_API_TOKEN: ${{ secrets.ANACONDA_API_TOKEN }}
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/staging-}"
+          python3 .github/scripts/channel_tools.py retire \
+            libfdpio2 "${VERSION}" "${RUNNER_TEMP}/attic"
+
+      - name: Keep the retired bytes off-channel
+        if: always() && startsWith(github.ref, 'refs/tags/staging-')
+        uses: actions/upload-artifact@v4
+        with:
+          name: retired-staging-candidates-${{ matrix.subdir }}
+          path: ${{ runner.temp }}/attic
+          if-no-files-found: ignore
+          retention-days: 90
+
+  promote:
+    # No build. Relabels the artifacts that were already built and verified.
+    if: startsWith(github.ref, 'refs/tags/release-')
+    runs-on: ubuntu-latest
+    env:
+      ANACONDA_API_TOKEN: ${{ secrets.ANACONDA_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Move staging -> main
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/release-}"
+          # NOT `anaconda move`: it ignores the version and moves everything
+          # in the source label. See fdp-core spec section 4.2.
+          python3 .github/scripts/channel_tools.py promote libfdpio2 "${VERSION}"
