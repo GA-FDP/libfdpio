@@ -11,7 +11,15 @@ echo "Building version: ${GIT_DESCRIBE_TAG} (${GIT_DESCRIBE_NUMBER}_${GIT_DESCRI
 OUTPUT_DIR="${1:-${HOME}/outdir}"
 mkdir -p "${OUTPUT_DIR}"
 
+# EXTRA_CHANNEL (e.g. ga-fdp/label/staging) lets the build and its tests
+# resolve a sibling package that is staged but not yet blessed.
+CHANNEL_FLAGS=""
+if [ -n "${EXTRA_CHANNEL:-}" ]; then
+    CHANNEL_FLAGS="--channel ${EXTRA_CHANNEL}"
+fi
+
 rattler-build build --recipe recipe/ \
+  ${CHANNEL_FLAGS} \
   --channel ga-fdp \
   --channel conda-forge \
   --output-dir "${OUTPUT_DIR}"

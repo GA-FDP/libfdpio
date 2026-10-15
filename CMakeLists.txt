@@ -8,13 +8,10 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 add_compile_definitions(_LARGEFILE_SOURCE _LARGEFILE64_SOURCE _FILE_OFFSET_BITS=64)
 
-# Prefer shared libraries over static
-set(CMAKE_FIND_LIBRARY_SUFFIXES .so .so.1 .so.0)
-
 # Find XRootD libraries manually (conda doesn't provide .pc files)
 # Look for the library directory
 find_path(XROOTD_LIB_DIR
-    NAMES libXrdCl.so
+    NAMES libXrdCl${CMAKE_SHARED_LIBRARY_SUFFIX}
     HINTS ${CMAKE_PREFIX_PATH}/lib $ENV{PREFIX}/lib $ENV{CONDA_PREFIX}/lib
 )
 
@@ -50,8 +47,10 @@ set(FDPIO_SOURCES
 # this is the first release of the fdpio2 ABI.
 add_library(fdpio2 SHARED ${FDPIO_SOURCES})
 
-# Force dynamic linking
-target_link_options(fdpio2 PRIVATE "LINKER:-Bdynamic")
+# Force dynamic linking. Apple's ld has no -Bdynamic and links dylibs anyway.
+if(NOT APPLE)
+    target_link_options(fdpio2 PRIVATE "LINKER:-Bdynamic")
+endif()
 
 # Link against XRootD and dependencies dynamically
 target_link_directories(fdpio2 PUBLIC ${XROOTD_LIB_DIR})

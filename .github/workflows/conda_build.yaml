@@ -12,7 +12,21 @@ on:
 
 jobs:
   build_and_test:
-    runs-on: ubuntu-latest
+    # osx-arm64 builds natively on macOS: a cross-build from Linux would need
+    # Apple's SDK, whose license limits it to Apple hardware.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - subdir: linux-64
+            os: ubuntu-latest
+            extra_channel: ""
+          - subdir: osx-arm64
+            os: macos-14
+            # No osx-arm64 xrdcl-pelican-fdp is blessed yet; 0.3.1 is staged.
+            # Linux keeps testing against what users install.
+            extra_channel: ga-fdp/label/staging
+    runs-on: ${{ matrix.os }}
     defaults:
       run:
         shell: bash -el {0}
@@ -28,6 +42,7 @@ jobs:
       - name: Build Conda package
         env:
           BEARER_TOKEN: ${{ secrets.BEARER_TOKEN }}
+          EXTRA_CHANNEL: ${{ matrix.extra_channel }}
         run: |
           pixi global install rattler-build
           ./build_package.sh ${HOME}/outdir
@@ -39,4 +54,4 @@ jobs:
             --owner ga-fdp \
             --api-key ${{ secrets.ANACONDA_API_TOKEN }} \
             --force \
-            ${HOME}/outdir/linux-64/*.conda
+            ${HOME}/outdir/${{ matrix.subdir }}/*.conda
