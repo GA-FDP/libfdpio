@@ -38,6 +38,9 @@ jobs:
       - uses: prefix-dev/setup-pixi@v0.8.1
         with:
           pixi-version: latest
+          # The build uses only a global rattler-build; the dev environment
+          # in pixi.toml is linux-64 only and would fail to install on macOS.
+          run-install: false
 
       - name: Build Conda package
         env:
