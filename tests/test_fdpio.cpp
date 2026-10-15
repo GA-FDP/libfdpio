@@ -62,7 +62,7 @@ std::string make_tmp_path(const char *suffix) {
 //     returns 3011/NotFound on stale federation directors).
 constexpr const char *kDefaultTestUrl =
     "pelican://osg-htc.org:443/fdp-d3d/archives/index/json/"
-    "json_indexes_2026-01-13_12:22:11/2000/200000.json";
+    "json_indexes_2026-06-23_15:20:51/2000/200000.json";
 
 const char *test_url() {
     const char *override_url = std::getenv("FDPIO_TEST_URL");
