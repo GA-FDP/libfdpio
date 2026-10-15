@@ -1,4 +1,13 @@
 c_stdlib:
-  - sysroot
+  - if: linux
+    then: [sysroot]
+  - if: osx
+    then: [macosx_deployment_target]
 c_stdlib_version:
-  - "2.28"
+  - if: linux
+    then: ["2.28"]
+  - if: osx
+    then: ["11.0"]
+MACOSX_DEPLOYMENT_TARGET:
+  - if: osx
+    then: ["11.0"]

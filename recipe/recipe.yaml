@@ -16,7 +16,7 @@ build:
   script:
     - mkdir -p build
     - cd build
-    - cmake -DCMAKE_INSTALL_PREFIX=$PREFIX ..
+    - cmake ${CMAKE_ARGS} -DCMAKE_INSTALL_PREFIX=$PREFIX ..
     - make
     - make install
 
@@ -45,6 +45,13 @@ requirements:
       - libfdpio2 >=2.0.0,<3.0.0a0
 
 tests:
+  - package_contents:
+      lib:
+        - fdpio2
+      include:
+        - fdpio2/fdpio.h
+      files:
+        - lib/pkgconfig/fdpio2.pc
   - script:
       env:
         BEARER_TOKEN: ${{ env.get("BEARER_TOKEN", default="") }}
@@ -56,10 +63,9 @@ tests:
         XRD_LOGLEVEL: Debug
       content:
         - test -d $PREFIX/etc/xrootd/client.plugins.d
-        - test -f $PREFIX/lib/libXrdClPelican-5.so
-        - test -f $PREFIX/include/fdpio2/fdpio.h
-        - test -f $PREFIX/lib/libfdpio2.so
-        - test -f $PREFIX/lib/pkgconfig/fdpio2.pc
+        - if: osx
+          then: test -f $PREFIX/lib/libXrdClPelican-5.dylib
+          else: test -f $PREFIX/lib/libXrdClPelican-5.so
         - test_fdpio
 
 about:
