@@ -1,5 +1,5 @@
 context:
-  version: ${{ env.get("GIT_DESCRIBE_TAG", default="0.0.0") | replace("release-", "") }}
+  version: ${{ env.get("GIT_DESCRIBE_TAG", default="0.0.0") | replace("release-", "") | replace("staging-", "") }}
   build_number: ${{ env.get("GIT_DESCRIBE_NUMBER", default="0") }}
   build_hash: ${{ env.get("GIT_DESCRIBE_HASH", default="unknown") }}
 
